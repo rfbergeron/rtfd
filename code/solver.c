@@ -2,13 +2,19 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+
 #include "auxlib.h"
 #define BORDER 8
 #define IX(i, j) ((i) + (N + BORDER) * (j))
 #define ACTUALSIZE ((N + BORDER) * (N + BORDER))
 #define BSTART ((BORDER / 2) - 1)
 #define BEND (BSTART + N + 1)
-#define SWAP(x0, x) {float *tmp = x0;x0 = x;x = tmp;}
+#define SWAP(x0, x)  \
+  {                  \
+    float *tmp = x0; \
+    x0 = x;          \
+    x = tmp;         \
+  }
 
 void add_source(int N, float *x, float *s, float dt) {
   int i, size = ACTUALSIZE;
@@ -18,16 +24,19 @@ void add_source(int N, float *x, float *s, float dt) {
 void set_bnd(int N, int b, float *x) {
   int i;
 
-  for (i = BSTART+1; i < BEND; i++) {
-    x[IX(BSTART, i)] = b == 1 ? -x[IX(BSTART+1, i)] : x[IX(BSTART+1, i)];
-    x[IX(BEND, i)] = b == 1 ? -x[IX(BEND-1, i)] : x[IX(BEND-1, i)];
-    x[IX(i, BSTART)] = b == 2 ? -x[IX(i, BSTART+1)] : x[IX(i, BSTART+1)];
-    x[IX(i, BEND)] = b == 2 ? -x[IX(i, BEND-1)] : x[IX(i, BEND-1)];
+  for (i = BSTART + 1; i < BEND; i++) {
+    x[IX(BSTART, i)] = b == 1 ? -x[IX(BSTART + 1, i)] : x[IX(BSTART + 1, i)];
+    x[IX(BEND, i)] = b == 1 ? -x[IX(BEND - 1, i)] : x[IX(BEND - 1, i)];
+    x[IX(i, BSTART)] = b == 2 ? -x[IX(i, BSTART + 1)] : x[IX(i, BSTART + 1)];
+    x[IX(i, BEND)] = b == 2 ? -x[IX(i, BEND - 1)] : x[IX(i, BEND - 1)];
   }
-  x[IX(BSTART, BSTART)] = 0.5f * (x[IX(BSTART+1, BSTART)] + x[IX(BSTART, BSTART+1)]);
-  x[IX(BSTART, BEND)] = 0.5f * (x[IX(BSTART+1, BEND)] + x[IX(BSTART, BEND-1)]);
-  x[IX(BEND, BSTART)] = 0.5f * (x[IX(BEND-1, BSTART)] + x[IX(BEND, BSTART+1)]);
-  x[IX(BEND, BEND)] = 0.5f * (x[IX(BEND-1, BEND)] + x[IX(BEND, BEND-1)]);
+  x[IX(BSTART, BSTART)] =
+      0.5f * (x[IX(BSTART + 1, BSTART)] + x[IX(BSTART, BSTART + 1)]);
+  x[IX(BSTART, BEND)] =
+      0.5f * (x[IX(BSTART + 1, BEND)] + x[IX(BSTART, BEND - 1)]);
+  x[IX(BEND, BSTART)] =
+      0.5f * (x[IX(BEND - 1, BSTART)] + x[IX(BEND, BSTART + 1)]);
+  x[IX(BEND, BEND)] = 0.5f * (x[IX(BEND - 1, BEND)] + x[IX(BEND, BEND - 1)]);
 }
 
 void lin_solve(int N, int b, float *x, float *x0, float a, float c) {
@@ -51,8 +60,8 @@ void jac_solve(int N, int b, float *x, float *x0, float a, float c) {
   float *x1 = malloc(size * sizeof(float));
 
   for (k = 0; k < 20; k++) {
-    for (i = BSTART+1; i < BEND; i++) {
-      for (j = BSTART+1; j < BEND; j++) {
+    for (i = BSTART + 1; i < BEND; i++) {
+      for (j = BSTART + 1; j < BEND; j++) {
         x1[IX(i, j)] =
             (x0[IX(i, j)] + a * (x[IX(i - 1, j)] + x[IX(i + 1, j)] +
                                  x[IX(i, j - 1)] + x[IX(i, j + 1)])) /
@@ -72,13 +81,20 @@ void simd_solve(size_t N, int b, float *x, float *x0, float a, float c) {
    */
   float *x1 = aligned_alloc(64, size * sizeof(float));
   float c_inv = 1.0f / c;
+  /* no broadcast available until AVX; if we're targeting SSE2 this is
+   * something like what _mm_set1_ps translates to
+   */
+  __m128 c_inv_vec = _mm_load_ss(&c_inv);
+  c_inv_vec = _mm_shuffle_ps(c_inv_vec, c_inv_vec, _MM_SHUFFLE(0, 0, 0, 0));
+  __m128 a_vec = _mm_load_ss(&a);
+  a_vec = _mm_shuffle_ps(a_vec, a_vec, _MM_SHUFFLE(0, 0, 0, 0));
 
   /* increment i(columns) by four and work with matrix in 4x1 chunks
    * had to switch i and j so that it goes across rows first
    */
   for (k = 0; k < 20; k++) {
-    for (j = BSTART+1; j < BEND; ++j) {
-      for (i = BSTART+1; i < BEND; i += 4) {
+    for (j = BSTART + 1; j < BEND; ++j) {
+      for (i = BSTART + 1; i < BEND; i += 4) {
         __m128 above = _mm_load_ps(x + IX(i, j - 1));
         __m128 current = _mm_load_ps(x + IX(i, j));
         __m128 below = _mm_load_ps(x + IX(i, j + 1));
@@ -103,9 +119,9 @@ void simd_solve(size_t N, int b, float *x, float *x0, float a, float c) {
         dest = _mm_add_ps(dest, shiftl);
 
         /* multiply by a; add x0; divide by c */
-        dest = _mm_mul_ps(dest, _mm_set1_ps(a));
+        dest = _mm_mul_ps(dest, a_vec);
         dest = _mm_add_ps(dest, nought);
-        dest = _mm_mul_ps(dest, _mm_set1_ps(c_inv));
+        dest = _mm_mul_ps(dest, c_inv_vec);
 
         /* send it back */
         _mm_store_ps(x + IX(i, j), dest);
@@ -127,8 +143,8 @@ void advect(int N, int b, float *d, float *d0, float *u, float *v, float dt) {
   float x, y, s0, t0, s1, t1, dt0;
 
   dt0 = dt * N;
-  for (i = BSTART+1; i < BEND; ++i) {
-    for (j = BSTART+1; j < BEND; ++j) {
+  for (i = BSTART + 1; i < BEND; ++i) {
+    for (j = BSTART + 1; j < BEND; ++j) {
       x = i - dt0 * u[IX(i, j)];
       y = j - dt0 * v[IX(i, j)];
       if (x < BSTART + 0.5f) x = BSTART + 0.5f;
@@ -153,8 +169,8 @@ void advect(int N, int b, float *d, float *d0, float *u, float *v, float dt) {
 void project(int N, float *u, float *v, float *p, float *div) {
   int i, j;
 
-  for (i = BSTART+1; i < BEND; ++i) {
-    for (j = BSTART+1; j < BEND; ++j) {
+  for (i = BSTART + 1; i < BEND; ++i) {
+    for (j = BSTART + 1; j < BEND; ++j) {
       div[IX(i, j)] = -0.5f *
                       (u[IX(i + 1, j)] - u[IX(i - 1, j)] + v[IX(i, j + 1)] -
                        v[IX(i, j - 1)]) /
@@ -167,8 +183,8 @@ void project(int N, float *u, float *v, float *p, float *div) {
 
   simd_solve(N, 0, p, div, 1, 4);
 
-  for (i = BSTART+1; i < BEND; ++i) {
-    for (j = BSTART+1; j < BEND; ++j) {
+  for (i = BSTART + 1; i < BEND; ++i) {
+    for (j = BSTART + 1; j < BEND; ++j) {
       u[IX(i, j)] -= 0.5f * N * (p[IX(i + 1, j)] - p[IX(i - 1, j)]);
       v[IX(i, j)] -= 0.5f * N * (p[IX(i, j + 1)] - p[IX(i, j - 1)]);
     }
@@ -205,6 +221,6 @@ void vel_step(int N, float *u, float *v, float *u0, float *v0, float visc,
 }
 
 void man_step(int N, float *x, float *x0, float *u, float *v, float diff,
-               float dt) {
+              float dt) {
   add_source(N, x, x0, dt);
 }

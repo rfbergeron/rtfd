@@ -15,10 +15,10 @@
  */
 
 #include <GL/glut.h>
+#include <getopt.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
-#include <getopt.h>
 
 #include "auxlib.h"
 
@@ -32,8 +32,8 @@
 // external definitions (from solver.c)
 extern void dens_step(int N, float *x, float *x0, float *u, float *v,
                       float diff, float dt);
-extern void man_step(int N, float *x, float *x0, float *u, float *v,
-                      float diff, float dt);
+extern void man_step(int N, float *x, float *x0, float *u, float *v, float diff,
+                     float dt);
 extern void vel_step(int N, float *u, float *v, float *u0, float *v0,
                      float visc, float dt);
 
@@ -119,9 +119,9 @@ static void draw_velocity(void) {
 
   glBegin(GL_LINES);
 
-  for (i = BSTART+1; i < BEND; i++) {
+  for (i = BSTART + 1; i < BEND; i++) {
     x = (i - 0.5f) * h;
-    for (j = BSTART+1; j < BEND; j++) {
+    for (j = BSTART + 1; j < BEND; j++) {
       y = (j - 0.5f) * h;
 
       glVertex2f(x, y);
@@ -230,7 +230,7 @@ static void key_func(unsigned char key, int x, int y) {
       break;
 
     case 0x20:
-      if(manual_step) {
+      if (manual_step) {
         vel_step(N, u, v, u_prev, v_prev, visc, dt);
         dens_step(N, dens, dens_prev, u, v, diff, dt);
       }
@@ -261,7 +261,7 @@ static void reshape_func(int width, int height) {
 static void idle_func(void) {
   get_from_UI(dens_prev, u_prev, v_prev);
 
-  if(manual_step) {
+  if (manual_step) {
     man_step(N, dens, dens_prev, u, v, diff, dt);
   } else {
     vel_step(N, u, v, u_prev, v_prev, visc, dt);
