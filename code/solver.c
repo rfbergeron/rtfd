@@ -16,27 +16,67 @@
     x = tmp;         \
   }
 
-void add_source(int N, float *x, float *s, float dt) {
-  int i, size = ACTUALSIZE;
-  for (i = 0; i < size; i++) x[i] += dt * s[i];
+// TODO(Robert): change all occurrences of 'b' to 'flag' for clarity
+// TODO(Robert): change storage scheme for fluid velocity vectors to make
+// simd implementation easier and more sensible
+// TODO(Robert): change types and declaration locations to be more appropriate
+// for 'modern' C
+
+void add_source(size_t N, int flag, float *x, float *s, float dt) {
+  size_t size = ACTUALSIZE;
+  if (flag) {
+   // x,s are uv arrays
+    for (size_t i = 0; i < 2 * size; ++i) x[i] += dt * s[i];
+  } else {
+    // x,s are density arrays
+    for (size_t i = 0; i < size; ++i) x[i] += dt * s[i];
+  }
 }
 
-void set_bnd(int N, int b, float *x) {
-  int i;
+void set_bnd(size_t N, int flag, float *x) {
+  if (flag) {
+    // setting vector bounds; x is twice as wide as it is tall; even indices are
+    // horizontal(u) components while odd indices are vertical(v) components
+    for (size_t i = BSTART + 1; i < BEND; i+=2) {
+      // u components
+      x[IX(BSTART, i)] = x[IX(BSTART + 1, i)];
+      x[IX(BEND, i)] = x[IX(BEND - 1, i)];
+      x[IX(i, BSTART)] = -x[IX(i, BSTART + 1)];
+      x[IX(i, BEND)] = -x[IX(i, BEND - 1)];
+      // horizontal offset for v components
+      x[IX(BSTART, i+1)] = -x[IX(BSTART + 1, i)];
+      x[IX(BEND, i+1)] = -x[IX(BEND - 1, i)];
+      x[IX(i, BSTART+1)] = x[IX(i, BSTART + 1)];
+      x[IX(i, BEND+1)] = x[IX(i, BEND - 1)];
+    }
 
-  for (i = BSTART + 1; i < BEND; i++) {
-    x[IX(BSTART, i)] = b == 1 ? -x[IX(BSTART + 1, i)] : x[IX(BSTART + 1, i)];
-    x[IX(BEND, i)] = b == 1 ? -x[IX(BEND - 1, i)] : x[IX(BEND - 1, i)];
-    x[IX(i, BSTART)] = b == 2 ? -x[IX(i, BSTART + 1)] : x[IX(i, BSTART + 1)];
-    x[IX(i, BEND)] = b == 2 ? -x[IX(i, BEND - 1)] : x[IX(i, BEND - 1)];
+    // TODO(Robert): figure out how to correctly do the math to account for the
+    // width of the uv matrix
+    x[IX(BSTART, BSTART)] =
+        0.5f * (x[IX(BSTART + 1, BSTART)] + x[IX(BSTART, BSTART + 1)]);
+    x[IX(BSTART, BEND)] =
+        0.5f * (x[IX(BSTART + 1, BEND)] + x[IX(BSTART, BEND - 1)]);
+    x[IX(2 * BEND, BSTART)] =
+        0.5f * (x[IX(BEND - 1, BSTART)] + x[IX(BEND, BSTART + 1)]);
+    x[IX(2 * BEND, BEND)] = 0.5f * (x[IX(BEND - 1, BEND)] + x[IX(BEND, BEND - 1)]);
+  } else {
+    for (size_t i = BSTART + 1; i < BEND; ++i) {
+      // iterating over column; v components negated
+      x[IX(BSTART, i)] = flag == 1 ? -x[IX(BSTART + 1, i)] : x[IX(BSTART + 1, i)];
+      x[IX(BEND, i)] = flag == 1 ? -x[IX(BEND - 1, i)] : x[IX(BEND - 1, i)];
+      // iterating over row; u components negated
+      x[IX(i, BSTART)] = flag == 2 ? -x[IX(i, BSTART + 1)] : x[IX(i, BSTART + 1)];
+      x[IX(i, BEND)] = flag == 2 ? -x[IX(i, BEND - 1)] : x[IX(i, BEND - 1)];
+    }
+
+    x[IX(BSTART, BSTART)] =
+        0.5f * (x[IX(BSTART + 1, BSTART)] + x[IX(BSTART, BSTART + 1)]);
+    x[IX(BSTART, BEND)] =
+        0.5f * (x[IX(BSTART + 1, BEND)] + x[IX(BSTART, BEND - 1)]);
+    x[IX(BEND, BSTART)] =
+        0.5f * (x[IX(BEND - 1, BSTART)] + x[IX(BEND, BSTART + 1)]);
+    x[IX(BEND, BEND)] = 0.5f * (x[IX(BEND - 1, BEND)] + x[IX(BEND, BEND - 1)]);
   }
-  x[IX(BSTART, BSTART)] =
-      0.5f * (x[IX(BSTART + 1, BSTART)] + x[IX(BSTART, BSTART + 1)]);
-  x[IX(BSTART, BEND)] =
-      0.5f * (x[IX(BSTART + 1, BEND)] + x[IX(BSTART, BEND - 1)]);
-  x[IX(BEND, BSTART)] =
-      0.5f * (x[IX(BEND - 1, BSTART)] + x[IX(BEND, BSTART + 1)]);
-  x[IX(BEND, BEND)] = 0.5f * (x[IX(BEND - 1, BEND)] + x[IX(BEND, BEND - 1)]);
 }
 
 void lin_solve(int N, int b, float *x, float *x0, float a, float c) {
