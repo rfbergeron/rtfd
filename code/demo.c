@@ -15,6 +15,7 @@
 */
 
 #include <GL/glut.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -22,10 +23,10 @@
 
 /* global variables */
 
-static int N;
+static size_t N;
 static float dt, diff, visc;
 static float force, source;
-static int dvel;
+static bool dvel;
 
 static float *u, *v, *u_prev, *v_prev;
 static float *dens, *dens_prev;
@@ -51,15 +52,13 @@ static void free_data(void) {
 }
 
 static void clear_data(void) {
-  int i, size = (N + 2) * (N + 2);
-
-  for (i = 0; i < size; i++) {
+  for (size_t i = 0, size = ACTUALSIZE; i < size; i++) {
     u[i] = v[i] = u_prev[i] = v_prev[i] = dens[i] = dens_prev[i] = 0.0f;
   }
 }
 
 static int allocate_data(void) {
-  int size = (N + 2) * (N + 2);
+  size_t size = ACTUALSIZE;
 
   u = (float *)malloc(size * sizeof(float));
   v = (float *)malloc(size * sizeof(float));
@@ -70,10 +69,10 @@ static int allocate_data(void) {
 
   if (!u || !v || !u_prev || !v_prev || !dens || !dens_prev) {
     fprintf(stderr, "cannot allocate data\n");
-    return (0);
+    return 1;
   }
 
-  return (1);
+  return 0;
 }
 
 /*
@@ -94,20 +93,17 @@ static void pre_display(void) {
 static void post_display(void) { glutSwapBuffers(); }
 
 static void draw_velocity(void) {
-  int i, j;
-  float x, y, h;
-
-  h = 1.0f / N;
+  float h = 1.0f / N;
 
   glColor3f(1.0f, 1.0f, 1.0f);
   glLineWidth(1.0f);
 
   glBegin(GL_LINES);
 
-  for (i = 1; i <= N; i++) {
-    x = (i - 0.5f) * h;
-    for (j = 1; j <= N; j++) {
-      y = (j - 0.5f) * h;
+  for (size_t i = 1; i <= N; i++) {
+    float x = (i - 0.5f) * h;
+    for (size_t j = 1; j <= N; j++) {
+      float y = (j - 0.5f) * h;
 
       glVertex2f(x, y);
       glVertex2f(x + u[IX(i, j)], y + v[IX(i, j)]);
@@ -118,22 +114,19 @@ static void draw_velocity(void) {
 }
 
 static void draw_density(void) {
-  int i, j;
-  float x, y, h, d00, d01, d10, d11;
-
-  h = 1.0f / N;
+  float h = 1.0f / N;
 
   glBegin(GL_QUADS);
 
-  for (i = 0; i <= N; i++) {
-    x = (i - 0.5f) * h;
-    for (j = 0; j <= N; j++) {
-      y = (j - 0.5f) * h;
+  for (size_t i = 0; i <= N; i++) {
+    float x = (i - 0.5f) * h;
+    for (size_t j = 0; j <= N; j++) {
+      float y = (j - 0.5f) * h;
 
-      d00 = dens[IX(i, j)];
-      d01 = dens[IX(i, j + 1)];
-      d10 = dens[IX(i + 1, j)];
-      d11 = dens[IX(i + 1, j + 1)];
+      float d00 = dens[IX(i, j)];
+      float d01 = dens[IX(i, j + 1)];
+      float d10 = dens[IX(i + 1, j)];
+      float d11 = dens[IX(i + 1, j + 1)];
 
       glColor3f(d00, d00, d00);
       glVertex2f(x, y);
@@ -156,16 +149,16 @@ static void draw_density(void) {
 */
 
 static void get_from_UI(float *d, float *u, float *v) {
-  int i, j, size = (N + 2) * (N + 2);
+  size_t size = ACTUALSIZE;
 
-  for (i = 0; i < size; i++) {
+  for (size_t i = 0; i < size; i++) {
     u[i] = v[i] = d[i] = 0.0f;
   }
 
   if (!mouse_down[0] && !mouse_down[2]) return;
 
-  i = (int)((mx / (float)win_x) * N + 1);
-  j = (int)(((win_y - my) / (float)win_y) * N + 1);
+  size_t i = ((mx / (float)win_x) * N + 1);
+  size_t j = (((win_y - my) / (float)win_y) * N + 1);
 
   if (i < 1 || i > N || j < 1 || j > N) return;
 
@@ -310,8 +303,8 @@ int main(int argc, char **argv) {
     source = 100.0f;
     fprintf(
         stderr,
-        "Using defaults : N=%d dt=%g diff=%g visc=%g force = %g source=%g\n", N,
-        dt, diff, visc, force, source);
+        "Using defaults : N=%zu dt=%g diff=%g visc=%g force = %g source=%g\n",
+        N, dt, diff, visc, force, source);
   } else {
     N = atoi(argv[1]);
     dt = atof(argv[2]);
@@ -331,7 +324,7 @@ int main(int argc, char **argv) {
 
   dvel = 0;
 
-  if (!allocate_data()) exit(1);
+  if (allocate_data()) exit(1);
   clear_data();
 
   win_x = 512;
