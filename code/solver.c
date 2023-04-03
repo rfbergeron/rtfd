@@ -2,9 +2,12 @@
 
 #include <immintrin.h>
 #include <stdlib.h>
+#include <string.h>
 
-#define SOLVER simd_solve
+#define SOLVER sse2_solve
 #define SOLVE(N, type, x, x0, a, c) SOLVER(N, type, x, x0, a, c)
+#define PROJECTOR sse2_project
+#define PROJECT(N, u, v, p, div) PROJECTOR(N, u, v, p, div)
 
 typedef enum matrix_type { MAT_FLUID, MAT_U_VEL, MAT_V_VEL } MatrixType;
 
@@ -44,7 +47,7 @@ void set_bnd(size_t N, MatrixType type, float* x) {
       0.5f * (x[IX(ROWEND - 1, COLEND)] + x[IX(ROWEND, COLEND - 1)]);
 }
 
-void simd_solve(size_t N, MatrixType type, float* x, float* x0, float a,
+void sse2_solve(size_t N, MatrixType type, float* x, float* x0, float a,
                 float c) {
   float* x1 = aligned_alloc(64, ACTUALSIZE * sizeof(float));
   __m128 c_inv_vec = _mm_set1_ps(1.0f / c), a_vec = _mm_set1_ps(a);
@@ -156,6 +159,70 @@ void advect(size_t N, MatrixType type, float* d, float* d0, float* u, float* v,
   set_bnd(N, type, d);
 }
 
+void sse2_project(size_t N, float* u, float* v, float* p, float* div) {
+  __m128 multiplier = _mm_set1_ps(-0.5f / N);
+  memset(p, 0, ACTUALSIZE * sizeof(float));
+  for (size_t i = ROWBEGIN; i < ROWEND; i++) {
+    for (size_t j = COLBEGIN; j < COLEND; j += 4) {
+      __m128 u_above = _mm_load_ps(u + IX(i + 1, j));
+      __m128 u_below = _mm_load_ps(u + IX(i - 1, j));
+      __m128 u_div = _mm_sub_ps(u_above, u_below);
+
+      __m128 v_right = _mm_load_ps(v + IX(i, j));
+      __m128 v_right_temp = _mm_load_ss(v + IX(i, j + 4));
+      v_right = _mm_move_ss(v_right, v_right_temp);
+      v_right = _mm_shuffle_ps(v_right, v_right, _MM_SHUFFLE(0, 3, 2, 1));
+
+      __m128 v_left = _mm_load_ps(v + IX(i, j));
+      v_left = _mm_shuffle_ps(v_left, v_left, _MM_SHUFFLE(2, 1, 0, 0));
+      __m128 v_left_temp = _mm_load_ss(v + IX(i, j - 1));
+      v_left = _mm_move_ss(v_left, v_left_temp);
+
+      __m128 v_div = _mm_sub_ps(v_right, v_left);
+
+      __m128 result = _mm_add_ps(u_div, v_div);
+      result = _mm_mul_ps(result, multiplier);
+      _mm_store_ps(div + IX(i, j), result);
+    }
+  }
+  set_bnd(N, MAT_FLUID, div);
+
+  SOLVE(N, MAT_FLUID, p, div, 1, 4);
+
+  multiplier = _mm_set1_ps(0.5f * N);
+  for (size_t i = ROWBEGIN; i < ROWEND; i++) {
+    for (size_t j = COLBEGIN; j < COLEND; j += 4) {
+      __m128 p_above = _mm_load_ps(p + IX(i + 1, j));
+      __m128 p_below = _mm_load_ps(p + IX(i - 1, j));
+      __m128 p_vert_diff = _mm_sub_ps(p_above, p_below);
+      p_vert_diff = _mm_mul_ps(p_vert_diff, multiplier);
+
+      __m128 u_current = _mm_load_ps(u + IX(i, j));
+      u_current = _mm_sub_ps(u_current, p_vert_diff);
+      _mm_store_ps(u + IX(i, j), u_current);
+
+      __m128 p_right = _mm_load_ps(p + IX(i, j));
+      __m128 p_right_temp = _mm_load_ss(p + IX(i, j + 4));
+      p_right = _mm_move_ss(p_right, p_right_temp);
+      p_right = _mm_shuffle_ps(p_right, p_right, _MM_SHUFFLE(0, 3, 2, 1));
+
+      __m128 p_left = _mm_load_ps(p + IX(i, j));
+      p_left = _mm_shuffle_ps(p_left, p_left, _MM_SHUFFLE(2, 1, 0, 0));
+      __m128 p_left_temp = _mm_load_ss(p + IX(i, j - 1));
+      p_left = _mm_move_ss(p_left, p_left_temp);
+
+      __m128 p_horz_diff = _mm_sub_ps(p_right, p_left);
+      p_horz_diff = _mm_mul_ps(p_horz_diff, multiplier);
+
+      __m128 v_current = _mm_load_ps(v + IX(i, j));
+      v_current = _mm_sub_ps(v_current, p_horz_diff);
+      _mm_store_ps(v + IX(i, j), v_current);
+    }
+  }
+  set_bnd(N, MAT_U_VEL, u);
+  set_bnd(N, MAT_V_VEL, v);
+}
+
 void project(size_t N, float* u, float* v, float* p, float* div) {
   for (size_t i = ROWBEGIN; i < ROWEND; i++) {
     for (size_t j = COLBEGIN; j < COLEND; j++) {
@@ -198,10 +265,10 @@ void vel_step(size_t N, float* u, float* v, float* u0, float* v0, float visc,
   diffuse(N, MAT_U_VEL, u, u0, visc, dt);
   SWAP(v0, v);
   diffuse(N, MAT_V_VEL, v, v0, visc, dt);
-  project(N, u, v, u0, v0);
+  PROJECT(N, u, v, u0, v0);
   SWAP(u0, u);
   SWAP(v0, v);
   advect(N, MAT_U_VEL, u, u0, u0, v0, dt);
   advect(N, MAT_V_VEL, v, v0, u0, v0, dt);
-  project(N, u, v, u0, v0);
+  PROJECT(N, u, v, u0, v0);
 }
