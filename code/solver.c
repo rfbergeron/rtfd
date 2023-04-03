@@ -8,7 +8,7 @@
 #define SOLVE(N, type, x, x0, a, c) SOLVER(N, type, x, x0, a, c)
 #define PROJECTOR sse2_project
 #define PROJECT(N, u, v, p, div) PROJECTOR(N, u, v, p, div)
-#define ADDER sse2_add_source
+#define ADDER add_source
 #define ADD_SOURCE(N, x, s, dt) ADDER(N, x, s, dt)
 #define BOUNDER sse2_set_bnd
 #define SET_BND(N, type, x) BOUNDER(N, type, x)
@@ -38,44 +38,119 @@ void add_source(size_t N, float* x, float* s, float dt) {
   for (size_t i = 0, size = ACTUALSIZE; i < size; i++) x[i] += dt * s[i];
 }
 
+// GCC does not hoist the conditions of the ternary operator out of the loops,
+// nor does it turn the subps instructions into the magic xorps instruction used
+// with scalar operands. It also does not hoist the condition out if the ternary
+// operators are replaced with if statements.
+void sse2_set_bnd_alt(size_t N, MatrixType type, float* x) {
+  for (size_t j = COLBEGIN; j < COLEND; j += 4) {
+    _mm_store_ps(
+        x + IX(ROWBEGIN - 1, j),
+        type == MAT_U_VEL
+            ? _mm_sub_ps(_mm_setzero_ps(), _mm_load_ps(x + IX(ROWBEGIN, j)))
+            : _mm_load_ps(x + IX(ROWBEGIN, j)));
+    _mm_store_ps(
+        x + IX(ROWEND, j),
+        type == MAT_U_VEL
+            ? _mm_sub_ps(_mm_setzero_ps(), _mm_load_ps(x + IX(ROWEND - 1, j)))
+            : _mm_load_ps(x + IX(ROWEND - 1, j)));
+  }
+  for (size_t i = ROWBEGIN; i < ROWEND; ++i) {
+    x[IX(i, COLBEGIN - 1)] =
+        type == MAT_V_VEL ? -x[IX(i, COLBEGIN)] : x[IX(i, COLBEGIN)];
+    x[IX(i, COLEND)] =
+        type == MAT_V_VEL ? -x[IX(i, COLEND - 1)] : x[IX(i, COLEND - 1)];
+  }
+  x[IX(ROWBEGIN - 1, COLBEGIN - 1)] =
+      0.5f * (x[IX(ROWBEGIN, COLBEGIN - 1)] + x[IX(ROWBEGIN - 1, COLBEGIN)]);
+  x[IX(ROWBEGIN - 1, COLEND)] =
+      0.5f * (x[IX(ROWBEGIN, COLEND)] + x[IX(ROWBEGIN - 1, COLEND - 1)]);
+  x[IX(ROWEND, COLBEGIN - 1)] =
+      0.5f * (x[IX(ROWEND - 1, COLBEGIN - 1)] + x[IX(ROWEND, COLBEGIN)]);
+  x[IX(ROWEND, COLEND)] =
+      0.5f * (x[IX(ROWEND - 1, COLEND)] + x[IX(ROWEND, COLEND - 1)]);
+}
+
 void sse2_set_bnd(size_t N, MatrixType type, float* x) {
   switch (type) {
     case MAT_FLUID:
-      for (size_t j = 0; j < N; j += 4) {
-        _mm_store_ps(x + IX(ROWBEGIN - 1, COLBEGIN + j),
-                     _mm_load_ps(x + IX(ROWBEGIN, COLBEGIN + j)));
-        _mm_store_ps(x + IX(ROWEND, COLBEGIN + j),
-                     _mm_load_ps(x + IX(ROWEND - 1, COLBEGIN + j)));
-        for (size_t i = j; i < j + 4; ++i) {
-          x[IX(ROWBEGIN + i, COLBEGIN - 1)] = x[IX(ROWBEGIN + i, COLBEGIN)];
-          x[IX(ROWBEGIN + i, COLEND)] = x[IX(ROWBEGIN + i, COLEND - 1)];
-        }
+      for (size_t j = COLBEGIN; j < COLEND; j += 4) {
+        _mm_store_ps(x + IX(ROWBEGIN - 1, j), _mm_load_ps(x + IX(ROWBEGIN, j)));
+        _mm_store_ps(x + IX(ROWEND, j), _mm_load_ps(x + IX(ROWEND - 1, j)));
+      }
+      for (size_t i = ROWBEGIN; i < ROWEND; ++i) {
+        x[IX(i, COLBEGIN - 1)] = x[IX(i, COLBEGIN)];
+        x[IX(i, COLEND)] = x[IX(i, COLEND - 1)];
       }
       break;
     case MAT_U_VEL:
-      for (size_t j = 0; j < N; j += 4) {
-        _mm_store_ps(x + IX(ROWBEGIN - 1, COLBEGIN + j),
-                     _mm_sub_ps(_mm_setzero_ps(),
-                                _mm_load_ps(x + IX(ROWBEGIN, COLBEGIN + j))));
-        _mm_store_ps(x + IX(ROWEND, COLBEGIN + j),
-                     _mm_sub_ps(_mm_setzero_ps(),
-                                _mm_load_ps(x + IX(ROWEND - 1, COLBEGIN + j))));
-        for (size_t i = j; i < j + 4; ++i) {
-          x[IX(ROWBEGIN + i, COLBEGIN - 1)] = x[IX(ROWBEGIN + i, COLBEGIN)];
-          x[IX(ROWBEGIN + i, COLEND)] = x[IX(ROWBEGIN + i, COLEND - 1)];
-        }
+      for (size_t j = COLBEGIN; j < COLEND; j += 4) {
+        _mm_store_ps(
+            x + IX(ROWBEGIN - 1, j),
+            _mm_mul_ps(_mm_set1_ps(-1.0f), _mm_load_ps(x + IX(ROWBEGIN, j))));
+        _mm_store_ps(
+            x + IX(ROWEND, j),
+            _mm_mul_ps(_mm_set1_ps(-1.0f), _mm_load_ps(x + IX(ROWEND - 1, j))));
+      }
+      for (size_t i = ROWBEGIN; i < ROWEND; ++i) {
+        x[IX(i, COLBEGIN - 1)] = x[IX(i, COLBEGIN)];
+        x[IX(i, COLEND)] = x[IX(i, COLEND - 1)];
       }
       break;
     case MAT_V_VEL:
-      for (size_t j = 0; j < N; j += 4) {
-        _mm_store_ps(x + IX(ROWBEGIN - 1, COLBEGIN + j),
-                     _mm_load_ps(x + IX(ROWBEGIN, COLBEGIN + j)));
-        _mm_store_ps(x + IX(ROWEND, COLBEGIN + j),
-                     _mm_load_ps(x + IX(ROWEND - 1, COLBEGIN + j)));
-        for (size_t i = j; i < j + 4; ++i) {
-          x[IX(ROWBEGIN + i, COLBEGIN - 1)] = -x[IX(ROWBEGIN + i, COLBEGIN)];
-          x[IX(ROWBEGIN + i, COLEND)] = -x[IX(ROWBEGIN + i, COLEND - 1)];
-        }
+      for (size_t j = COLBEGIN; j < COLEND; j += 4) {
+        _mm_store_ps(x + IX(ROWBEGIN - 1, j), _mm_load_ps(x + IX(ROWBEGIN, j)));
+        _mm_store_ps(x + IX(ROWEND, j), _mm_load_ps(x + IX(ROWEND - 1, j)));
+      }
+      for (size_t i = ROWBEGIN; i < ROWEND; ++i) {
+        x[IX(i, COLBEGIN - 1)] = -x[IX(i, COLBEGIN)];
+        x[IX(i, COLEND)] = -x[IX(i, COLEND - 1)];
+      }
+      break;
+    default:
+      abort();
+  }
+  x[IX(ROWBEGIN - 1, COLBEGIN - 1)] =
+      0.5f * (x[IX(ROWBEGIN, COLBEGIN - 1)] + x[IX(ROWBEGIN - 1, COLBEGIN)]);
+  x[IX(ROWBEGIN - 1, COLEND)] =
+      0.5f * (x[IX(ROWBEGIN, COLEND)] + x[IX(ROWBEGIN - 1, COLEND - 1)]);
+  x[IX(ROWEND, COLBEGIN - 1)] =
+      0.5f * (x[IX(ROWEND - 1, COLBEGIN - 1)] + x[IX(ROWEND, COLBEGIN)]);
+  x[IX(ROWEND, COLEND)] =
+      0.5f * (x[IX(ROWEND - 1, COLEND)] + x[IX(ROWEND, COLEND - 1)]);
+}
+
+// unfortunately, GCC is not smart enough to auto-vectorize this
+void set_bnd_alt(size_t N, MatrixType type, float* x) {
+  switch (type) {
+    case MAT_FLUID:
+      for (size_t j = COLBEGIN; j < COLEND; ++j) {
+        x[IX(ROWBEGIN - 1, j)] = x[IX(ROWBEGIN, j)];
+        x[IX(ROWEND, j)] = x[IX(ROWEND - 1, j)];
+      }
+      for (size_t i = ROWBEGIN; i < ROWEND; ++i) {
+        x[IX(i, COLBEGIN - 1)] = x[IX(i, COLBEGIN)];
+        x[IX(i, COLEND)] = x[IX(i, COLEND - 1)];
+      }
+      break;
+    case MAT_U_VEL:
+      for (size_t j = COLBEGIN; j < COLEND; ++j) {
+        x[IX(ROWBEGIN - 1, j)] = -x[IX(ROWBEGIN, j)];
+        x[IX(ROWEND, j)] = -x[IX(ROWEND - 1, j)];
+      }
+      for (size_t i = ROWBEGIN; i < ROWEND; ++i) {
+        x[IX(i, COLBEGIN - 1)] = x[IX(i, COLBEGIN)];
+        x[IX(i, COLEND)] = x[IX(i, COLEND - 1)];
+      }
+      break;
+    case MAT_V_VEL:
+      for (size_t j = COLBEGIN; j < COLEND; ++j) {
+        x[IX(ROWBEGIN - 1, j)] = x[IX(ROWBEGIN, j)];
+        x[IX(ROWEND, j)] = x[IX(ROWEND - 1, j)];
+      }
+      for (size_t i = ROWBEGIN; i < ROWEND; ++i) {
+        x[IX(i, COLBEGIN - 1)] = -x[IX(i, COLBEGIN)];
+        x[IX(i, COLEND)] = -x[IX(i, COLEND - 1)];
       }
       break;
     default:
