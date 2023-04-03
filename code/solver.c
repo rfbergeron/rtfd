@@ -1,8 +1,9 @@
 #include "solver.h"
 
+#include <immintrin.h>
 #include <stdlib.h>
 
-#define SOLVER jac_solve
+#define SOLVER simd_solve
 #define SOLVE(N, type, x, x0, a, c) SOLVER(N, type, x, x0, a, c)
 
 typedef enum matrix_type { MAT_FLUID, MAT_U_VEL, MAT_V_VEL } MatrixType;
@@ -19,25 +20,83 @@ void add_source(size_t N, float* x, float* s, float dt) {
 }
 
 void set_bnd(size_t N, MatrixType type, float* x) {
-  for (size_t i = 1; i <= N; i++) {
-    x[IX(0, i)] = type == MAT_U_VEL ? -x[IX(1, i)] : x[IX(1, i)];
-    x[IX(N + 1, i)] = type == MAT_U_VEL ? -x[IX(N, i)] : x[IX(N, i)];
-    x[IX(i, 0)] = type == MAT_V_VEL ? -x[IX(i, 1)] : x[IX(i, 1)];
-    x[IX(i, N + 1)] = type == MAT_V_VEL ? -x[IX(i, N)] : x[IX(i, N)];
+  for (size_t i = 0; i < N; i++) {
+    x[IX(ROWBEGIN - 1, COLBEGIN + i)] = type == MAT_U_VEL
+                                            ? -x[IX(ROWBEGIN, COLBEGIN + i)]
+                                            : x[IX(ROWBEGIN, COLBEGIN + i)];
+    x[IX(ROWEND, COLBEGIN + i)] = type == MAT_U_VEL
+                                      ? -x[IX(ROWEND - 1, COLBEGIN + i)]
+                                      : x[IX(ROWEND - 1, COLBEGIN + i)];
+    x[IX(ROWBEGIN + i, COLBEGIN - 1)] = type == MAT_V_VEL
+                                            ? -x[IX(ROWBEGIN + i, COLBEGIN)]
+                                            : x[IX(ROWBEGIN + i, COLBEGIN)];
+    x[IX(ROWBEGIN + i, COLEND)] = type == MAT_V_VEL
+                                      ? -x[IX(ROWBEGIN + i, COLEND - 1)]
+                                      : x[IX(ROWBEGIN + i, COLEND - 1)];
   }
-  x[IX(0, 0)] = 0.5f * (x[IX(1, 0)] + x[IX(0, 1)]);
-  x[IX(0, N + 1)] = 0.5f * (x[IX(1, N + 1)] + x[IX(0, N)]);
-  x[IX(N + 1, 0)] = 0.5f * (x[IX(N, 0)] + x[IX(N + 1, 1)]);
-  x[IX(N + 1, N + 1)] = 0.5f * (x[IX(N, N + 1)] + x[IX(N + 1, N)]);
+  x[IX(ROWBEGIN - 1, COLBEGIN - 1)] =
+      0.5f * (x[IX(ROWBEGIN, COLBEGIN - 1)] + x[IX(ROWBEGIN - 1, COLBEGIN)]);
+  x[IX(ROWBEGIN - 1, COLEND)] =
+      0.5f * (x[IX(ROWBEGIN, COLEND)] + x[IX(ROWBEGIN - 1, COLEND - 1)]);
+  x[IX(ROWEND, COLBEGIN - 1)] =
+      0.5f * (x[IX(ROWEND - 1, COLBEGIN - 1)] + x[IX(ROWEND, COLBEGIN)]);
+  x[IX(ROWEND, COLEND)] =
+      0.5f * (x[IX(ROWEND - 1, COLEND)] + x[IX(ROWEND, COLEND - 1)]);
+}
+
+void simd_solve(size_t N, MatrixType type, float* x, float* x0, float a,
+                float c) {
+  float* x1 = aligned_alloc(64, ACTUALSIZE * sizeof(float));
+  __m128 c_inv_vec = _mm_set1_ps(1.0f / c), a_vec = _mm_set1_ps(a);
+
+  for (size_t k = 0; k < 20; k++) {
+    for (size_t i = ROWBEGIN; i < ROWEND; ++i) {
+      for (size_t j = COLBEGIN; j < COLEND; j += 4) {
+        __m128 above = _mm_load_ps(x + IX(i + 1, j));
+        __m128 current = _mm_load_ps(x + IX(i, j));
+        __m128 below = _mm_load_ps(x + IX(i - 1, j));
+        __m128 x0_vec = _mm_load_ps(x0 + IX(i, j));
+
+        /* row-by-row addition */
+        __m128 dest = _mm_add_ps(above, below);
+
+        /* column-by-column addition */
+        __m128 shiftr =
+            _mm_shuffle_ps(current, current, _MM_SHUFFLE(0, 0, 1, 2));
+        __m128 tempr = _mm_load_ss(x + IX(i, j - 1));
+        shiftr = _mm_move_ss(shiftr, tempr);
+        dest = _mm_add_ps(dest, shiftr);
+
+        /* shuffle after since we don't need to save slot zero but we do need
+         * the value we just loaded to be in the high slot
+         */
+        __m128 templ = _mm_load_ss(x + IX(i, j + 4));
+        __m128 shiftl = _mm_move_ss(current, templ);
+        shiftl = _mm_shuffle_ps(shiftl, shiftl, _MM_SHUFFLE(1, 2, 3, 0));
+        dest = _mm_add_ps(dest, shiftl);
+
+        /* multiply by a; add x0; divide by c */
+        dest = _mm_mul_ps(dest, a_vec);
+        dest = _mm_add_ps(dest, x0_vec);
+        dest = _mm_mul_ps(dest, c_inv_vec);
+
+        /* send it back */
+        _mm_store_ps(x1 + IX(i, j), dest);
+      }
+    }
+    set_bnd(N, type, x1);
+    SWAP(x, x1);
+  }
+  free(x1);
 }
 
 void jac_solve(size_t N, MatrixType type, float* x, float* x0, float a,
                float c) {
-  float* x1 = malloc(ACTUALSIZE * sizeof(float));
+  float* x1 = aligned_alloc(64, ACTUALSIZE * sizeof(float));
 
   for (size_t k = 0; k < 20; k++) {
-    for (size_t i = 1; i <= N; i++) {
-      for (size_t j = 1; j <= N; j++) {
+    for (size_t i = ROWBEGIN; i < ROWEND; i++) {
+      for (size_t j = COLBEGIN; j < COLEND; j++) {
         x1[IX(i, j)] =
             (x0[IX(i, j)] + a * (x[IX(i - 1, j)] + x[IX(i + 1, j)] +
                                  x[IX(i, j - 1)] + x[IX(i, j + 1)])) /
@@ -54,8 +113,8 @@ void jac_solve(size_t N, MatrixType type, float* x, float* x0, float a,
 void lin_solve(size_t N, MatrixType type, float* x, float* x0, float a,
                float c) {
   for (size_t k = 0; k < 20; k++) {
-    for (size_t i = 1; i <= N; i++) {
-      for (size_t j = 1; j <= N; j++) {
+    for (size_t i = ROWBEGIN; i < ROWEND; i++) {
+      for (size_t j = COLBEGIN; j < COLEND; j++) {
         x[IX(i, j)] = (x0[IX(i, j)] + a * (x[IX(i - 1, j)] + x[IX(i + 1, j)] +
                                            x[IX(i, j - 1)] + x[IX(i, j + 1)])) /
                       c;
@@ -74,8 +133,8 @@ void diffuse(size_t N, MatrixType type, float* x, float* x0, float diff,
 void advect(size_t N, MatrixType type, float* d, float* d0, float* u, float* v,
             float dt) {
   float dt0 = dt * N;
-  for (size_t i = 1; i <= N; i++) {
-    for (size_t j = 1; j <= N; j++) {
+  for (size_t i = ROWBEGIN; i < ROWEND; i++) {
+    for (size_t j = COLBEGIN; j < COLEND; j++) {
       float x = i - dt0 * u[IX(i, j)];
       float y = j - dt0 * v[IX(i, j)];
       if (x < 0.5f) x = 0.5f;
@@ -98,8 +157,8 @@ void advect(size_t N, MatrixType type, float* d, float* d0, float* u, float* v,
 }
 
 void project(size_t N, float* u, float* v, float* p, float* div) {
-  for (size_t i = 1; i <= N; i++) {
-    for (size_t j = 1; j <= N; j++) {
+  for (size_t i = ROWBEGIN; i < ROWEND; i++) {
+    for (size_t j = COLBEGIN; j < COLEND; j++) {
       div[IX(i, j)] = -0.5f *
                       (u[IX(i + 1, j)] - u[IX(i - 1, j)] + v[IX(i, j + 1)] -
                        v[IX(i, j - 1)]) /
@@ -112,8 +171,8 @@ void project(size_t N, float* u, float* v, float* p, float* div) {
 
   SOLVE(N, MAT_FLUID, p, div, 1, 4);
 
-  for (size_t i = 1; i <= N; i++) {
-    for (size_t j = 1; j <= N; j++) {
+  for (size_t i = ROWBEGIN; i < ROWEND; i++) {
+    for (size_t j = COLBEGIN; j < COLEND; j++) {
       u[IX(i, j)] -= 0.5f * N * (p[IX(i + 1, j)] - p[IX(i - 1, j)]);
       v[IX(i, j)] -= 0.5f * N * (p[IX(i, j + 1)] - p[IX(i, j - 1)]);
     }

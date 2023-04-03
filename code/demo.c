@@ -43,12 +43,12 @@ static int omx, omy, mx, my;
 */
 
 static void free_data(void) {
-  if (u) free(u);
-  if (v) free(v);
-  if (u_prev) free(u_prev);
-  if (v_prev) free(v_prev);
-  if (dens) free(dens);
-  if (dens_prev) free(dens_prev);
+  free(u);
+  free(v);
+  free(u_prev);
+  free(v_prev);
+  free(dens);
+  free(dens_prev);
 }
 
 static void clear_data(void) {
@@ -60,12 +60,12 @@ static void clear_data(void) {
 static int allocate_data(void) {
   size_t size = ACTUALSIZE;
 
-  u = (float *)malloc(size * sizeof(float));
-  v = (float *)malloc(size * sizeof(float));
-  u_prev = (float *)malloc(size * sizeof(float));
-  v_prev = (float *)malloc(size * sizeof(float));
-  dens = (float *)malloc(size * sizeof(float));
-  dens_prev = (float *)malloc(size * sizeof(float));
+  u = aligned_alloc(64, size * sizeof(float));
+  v = aligned_alloc(64, size * sizeof(float));
+  u_prev = aligned_alloc(64, size * sizeof(float));
+  v_prev = aligned_alloc(64, size * sizeof(float));
+  dens = aligned_alloc(64, size * sizeof(float));
+  dens_prev = aligned_alloc(64, size * sizeof(float));
 
   if (!u || !v || !u_prev || !v_prev || !dens || !dens_prev) {
     fprintf(stderr, "cannot allocate data\n");
@@ -100,10 +100,10 @@ static void draw_velocity(void) {
 
   glBegin(GL_LINES);
 
-  for (size_t i = 1; i <= N; i++) {
-    float x = (i - 0.5f) * h;
-    for (size_t j = 1; j <= N; j++) {
-      float y = (j - 0.5f) * h;
+  for (size_t i = ROWBEGIN; i < ROWEND; i++) {
+    float x = (i - ROWBEGIN + 0.5f) * h;
+    for (size_t j = COLBEGIN; j < COLEND; j++) {
+      float y = (j - COLBEGIN + 0.5f) * h;
 
       glVertex2f(x, y);
       glVertex2f(x + u[IX(i, j)], y + v[IX(i, j)]);
@@ -118,10 +118,10 @@ static void draw_density(void) {
 
   glBegin(GL_QUADS);
 
-  for (size_t i = 0; i <= N; i++) {
-    float x = (i - 0.5f) * h;
-    for (size_t j = 0; j <= N; j++) {
-      float y = (j - 0.5f) * h;
+  for (size_t i = ROWBEGIN - 1; i < ROWEND; i++) {
+    float x = (i - (ROWBEGIN - 1) - 0.5f) * h;
+    for (size_t j = COLBEGIN - 1; j < COLEND; j++) {
+      float y = (j - (COLBEGIN - 1) - 0.5f) * h;
 
       float d00 = dens[IX(i, j)];
       float d01 = dens[IX(i, j + 1)];
@@ -157,10 +157,10 @@ static void get_from_UI(float *d, float *u, float *v) {
 
   if (!mouse_down[0] && !mouse_down[2]) return;
 
-  size_t i = ((mx / (float)win_x) * N + 1);
-  size_t j = (((win_y - my) / (float)win_y) * N + 1);
+  size_t i = ((mx / (float)win_x) * N + ROWBEGIN);
+  size_t j = (((win_y - my) / (float)win_y) * N + COLBEGIN);
 
-  if (i < 1 || i > N || j < 1 || j > N) return;
+  if (i < ROWBEGIN || i >= ROWEND || j < COLBEGIN || j >= COLEND) return;
 
   if (mouse_down[0]) {
     u[IX(i, j)] = force * (mx - omx);

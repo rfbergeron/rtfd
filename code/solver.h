@@ -1,8 +1,14 @@
 #ifndef SOLVER_H
 #define SOLVER_H
 #include <stddef.h>
-#define IX(i, j) ((j) + (N + 2) * (i))
-#define ACTUALSIZE ((N + 2) * (N + 2))
+#define COLBEGIN 4
+#define COLEND (N + COLBEGIN)
+#define ROWBEGIN 1
+#define ROWEND (N + ROWBEGIN)
+#define ROWSIZE (N + ROWBEGIN * 2)
+#define COLSIZE (N + COLBEGIN * 2)
+#define IX(i, j) ((N + 2 * COLBEGIN) * (i) + (j))
+#define ACTUALSIZE ((N + 2 * COLBEGIN) * (N + 2 * ROWBEGIN))
 
 void dens_step(size_t N, float* x, float* x0, float* u, float* v, float diff,
                float dt);
