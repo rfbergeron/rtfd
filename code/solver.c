@@ -140,12 +140,12 @@ void advect(size_t N, MatrixType type, float* d, float* d0, float* u, float* v,
     for (size_t j = COLBEGIN; j < COLEND; j++) {
       float x = i - dt0 * u[IX(i, j)];
       float y = j - dt0 * v[IX(i, j)];
-      if (x < 0.5f) x = 0.5f;
-      if (x > N + 0.5f) x = N + 0.5f;
+      if (x < ROWBEGIN - 0.5f) x = ROWBEGIN - 0.5f;
+      if (x > ROWEND - 0.5f) x = ROWEND - 0.5f;
       size_t i0 = x;
       size_t i1 = i0 + 1;
-      if (y < 0.5f) y = 0.5f;
-      if (y > N + 0.5f) y = N + 0.5f;
+      if (y < COLBEGIN - 0.5f) y = COLBEGIN - 0.5f;
+      if (y > COLEND - 0.5f) y = COLEND - 0.5f;
       size_t j0 = y;
       size_t j1 = j0 + 1;
       float s1 = x - i0;
