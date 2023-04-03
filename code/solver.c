@@ -1,5 +1,10 @@
 #include "solver.h"
 
+#include <stdlib.h>
+
+#define SOLVER jac_solve
+#define SOLVE(N, type, x, x0, a, c) SOLVER(N, type, x, x0, a, c)
+
 typedef enum matrix_type { MAT_FLUID, MAT_U_VEL, MAT_V_VEL } MatrixType;
 
 #define SWAP(x0, x)  \
@@ -26,6 +31,26 @@ void set_bnd(size_t N, MatrixType type, float* x) {
   x[IX(N + 1, N + 1)] = 0.5f * (x[IX(N, N + 1)] + x[IX(N + 1, N)]);
 }
 
+void jac_solve(size_t N, MatrixType type, float* x, float* x0, float a,
+               float c) {
+  float* x1 = malloc(ACTUALSIZE * sizeof(float));
+
+  for (size_t k = 0; k < 20; k++) {
+    for (size_t i = 1; i <= N; i++) {
+      for (size_t j = 1; j <= N; j++) {
+        x1[IX(i, j)] =
+            (x0[IX(i, j)] + a * (x[IX(i - 1, j)] + x[IX(i + 1, j)] +
+                                 x[IX(i, j - 1)] + x[IX(i, j + 1)])) /
+            c;
+      }
+    }
+    set_bnd(N, type, x1);
+    SWAP(x, x1);
+  }
+
+  free(x1);
+}
+
 void lin_solve(size_t N, MatrixType type, float* x, float* x0, float a,
                float c) {
   for (size_t k = 0; k < 20; k++) {
@@ -43,7 +68,7 @@ void lin_solve(size_t N, MatrixType type, float* x, float* x0, float a,
 void diffuse(size_t N, MatrixType type, float* x, float* x0, float diff,
              float dt) {
   float a = dt * diff * N * N;
-  lin_solve(N, type, x, x0, a, 1 + 4 * a);
+  SOLVE(N, type, x, x0, a, 1 + 4 * a);
 }
 
 void advect(size_t N, MatrixType type, float* d, float* d0, float* u, float* v,
@@ -85,7 +110,7 @@ void project(size_t N, float* u, float* v, float* p, float* div) {
   set_bnd(N, MAT_FLUID, div);
   set_bnd(N, MAT_FLUID, p);
 
-  lin_solve(N, MAT_FLUID, p, div, 1, 4);
+  SOLVE(N, MAT_FLUID, p, div, 1, 4);
 
   for (size_t i = 1; i <= N; i++) {
     for (size_t j = 1; j <= N; j++) {
