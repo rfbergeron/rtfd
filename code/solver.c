@@ -22,6 +22,8 @@ typedef enum matrix_type { MAT_FLUID, MAT_U_VEL, MAT_V_VEL } MatrixType;
     x = tmp;         \
   }
 
+// NOTE: vectorizing this one by hand is not necessary; it is simple enough that
+// the compiler can figure it out on its own
 void sse2_add_source(size_t N, float* x, float* s, float dt) {
   __m128 dt_vec = _mm_set1_ps(dt);
   for (size_t i = 0, size = ACTUALSIZE; i < size; i += 4) {
@@ -123,31 +125,28 @@ void sse2_solve(size_t N, MatrixType type, float* x, float* x0, float a,
     for (size_t i = ROWBEGIN; i < ROWEND; ++i) {
       for (size_t j = COLBEGIN; j < COLEND; j += 4) {
         __m128 above = _mm_load_ps(x + IX(i + 1, j));
-        __m128 current = _mm_load_ps(x + IX(i, j));
         __m128 below = _mm_load_ps(x + IX(i - 1, j));
-        __m128 x0_vec = _mm_load_ps(x0 + IX(i, j));
 
         /* row-by-row addition */
         __m128 dest = _mm_add_ps(above, below);
 
         /* column-by-column addition */
-        __m128 shiftr =
-            _mm_shuffle_ps(current, current, _MM_SHUFFLE(0, 0, 1, 2));
-        __m128 tempr = _mm_load_ss(x + IX(i, j - 1));
-        shiftr = _mm_move_ss(shiftr, tempr);
-        dest = _mm_add_ps(dest, shiftr);
+        __m128 left = _mm_load_ps(x + IX(i, j));
+        left = _mm_shuffle_ps(left, left, _MM_SHUFFLE(2, 1, 0, 0));
+        left = _mm_move_ss(left, _mm_load_ss(x + IX(i, j - 1)));
+        dest = _mm_add_ps(dest, left);
 
         /* shuffle after since we don't need to save slot zero but we do need
          * the value we just loaded to be in the high slot
          */
-        __m128 templ = _mm_load_ss(x + IX(i, j + 4));
-        __m128 shiftl = _mm_move_ss(current, templ);
-        shiftl = _mm_shuffle_ps(shiftl, shiftl, _MM_SHUFFLE(1, 2, 3, 0));
-        dest = _mm_add_ps(dest, shiftl);
+        __m128 right = _mm_load_ps(x + IX(i, j));
+        right = _mm_move_ss(right, _mm_load_ss(x + IX(i, j + 4)));
+        right = _mm_shuffle_ps(right, right, _MM_SHUFFLE(0, 3, 2, 1));
+        dest = _mm_add_ps(dest, right);
 
         /* multiply by a; add x0; divide by c */
         dest = _mm_mul_ps(dest, a_vec);
-        dest = _mm_add_ps(dest, x0_vec);
+        dest = _mm_add_ps(dest, _mm_load_ps(x0 + IX(i, j)));
         dest = _mm_mul_ps(dest, c_inv_vec);
 
         /* send it back */
@@ -236,14 +235,12 @@ void sse2_project(size_t N, float* u, float* v, float* p, float* div) {
       __m128 u_div = _mm_sub_ps(u_above, u_below);
 
       __m128 v_right = _mm_load_ps(v + IX(i, j));
-      __m128 v_right_temp = _mm_load_ss(v + IX(i, j + 4));
-      v_right = _mm_move_ss(v_right, v_right_temp);
+      v_right = _mm_move_ss(v_right, _mm_load_ss(v + IX(i, j + 4)));
       v_right = _mm_shuffle_ps(v_right, v_right, _MM_SHUFFLE(0, 3, 2, 1));
 
       __m128 v_left = _mm_load_ps(v + IX(i, j));
       v_left = _mm_shuffle_ps(v_left, v_left, _MM_SHUFFLE(2, 1, 0, 0));
-      __m128 v_left_temp = _mm_load_ss(v + IX(i, j - 1));
-      v_left = _mm_move_ss(v_left, v_left_temp);
+      v_left = _mm_move_ss(v_left, _mm_load_ss(v + IX(i, j - 1)));
 
       __m128 v_div = _mm_sub_ps(v_right, v_left);
 
