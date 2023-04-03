@@ -8,6 +8,10 @@
 #define SOLVE(N, type, x, x0, a, c) SOLVER(N, type, x, x0, a, c)
 #define PROJECTOR sse2_project
 #define PROJECT(N, u, v, p, div) PROJECTOR(N, u, v, p, div)
+#define ADDER sse2_add_source
+#define ADD_SOURCE(N, x, s, dt) ADDER(N, x, s, dt)
+#define BOUNDER sse2_set_bnd
+#define SET_BND(N, type, x) BOUNDER(N, type, x)
 
 typedef enum matrix_type { MAT_FLUID, MAT_U_VEL, MAT_V_VEL } MatrixType;
 
@@ -18,8 +22,71 @@ typedef enum matrix_type { MAT_FLUID, MAT_U_VEL, MAT_V_VEL } MatrixType;
     x = tmp;         \
   }
 
+void sse2_add_source(size_t N, float* x, float* s, float dt) {
+  __m128 dt_vec = _mm_set1_ps(dt);
+  for (size_t i = 0, size = ACTUALSIZE; i < size; i += 4) {
+    __m128 x_current = _mm_load_ps(x + i), s_current = _mm_load_ps(s + i);
+    s_current = _mm_mul_ps(s_current, dt_vec);
+    x_current = _mm_add_ps(x_current, s_current);
+    _mm_store_ps(x + i, x_current);
+  }
+}
+
 void add_source(size_t N, float* x, float* s, float dt) {
   for (size_t i = 0, size = ACTUALSIZE; i < size; i++) x[i] += dt * s[i];
+}
+
+void sse2_set_bnd(size_t N, MatrixType type, float* x) {
+  switch (type) {
+    case MAT_FLUID:
+      for (size_t j = 0; j < N; j += 4) {
+        _mm_store_ps(x + IX(ROWBEGIN - 1, COLBEGIN + j),
+                     _mm_load_ps(x + IX(ROWBEGIN, COLBEGIN + j)));
+        _mm_store_ps(x + IX(ROWEND, COLBEGIN + j),
+                     _mm_load_ps(x + IX(ROWEND - 1, COLBEGIN + j)));
+        for (size_t i = j; i < j + 4; ++i) {
+          x[IX(ROWBEGIN + i, COLBEGIN - 1)] = x[IX(ROWBEGIN + i, COLBEGIN)];
+          x[IX(ROWBEGIN + i, COLEND)] = x[IX(ROWBEGIN + i, COLEND - 1)];
+        }
+      }
+      break;
+    case MAT_U_VEL:
+      for (size_t j = 0; j < N; j += 4) {
+        _mm_store_ps(x + IX(ROWBEGIN - 1, COLBEGIN + j),
+                     _mm_sub_ps(_mm_setzero_ps(),
+                                _mm_load_ps(x + IX(ROWBEGIN, COLBEGIN + j))));
+        _mm_store_ps(x + IX(ROWEND, COLBEGIN + j),
+                     _mm_sub_ps(_mm_setzero_ps(),
+                                _mm_load_ps(x + IX(ROWEND - 1, COLBEGIN + j))));
+        for (size_t i = j; i < j + 4; ++i) {
+          x[IX(ROWBEGIN + i, COLBEGIN - 1)] = x[IX(ROWBEGIN + i, COLBEGIN)];
+          x[IX(ROWBEGIN + i, COLEND)] = x[IX(ROWBEGIN + i, COLEND - 1)];
+        }
+      }
+      break;
+    case MAT_V_VEL:
+      for (size_t j = 0; j < N; j += 4) {
+        _mm_store_ps(x + IX(ROWBEGIN - 1, COLBEGIN + j),
+                     _mm_load_ps(x + IX(ROWBEGIN, COLBEGIN + j)));
+        _mm_store_ps(x + IX(ROWEND, COLBEGIN + j),
+                     _mm_load_ps(x + IX(ROWEND - 1, COLBEGIN + j)));
+        for (size_t i = j; i < j + 4; ++i) {
+          x[IX(ROWBEGIN + i, COLBEGIN - 1)] = -x[IX(ROWBEGIN + i, COLBEGIN)];
+          x[IX(ROWBEGIN + i, COLEND)] = -x[IX(ROWBEGIN + i, COLEND - 1)];
+        }
+      }
+      break;
+    default:
+      abort();
+  }
+  x[IX(ROWBEGIN - 1, COLBEGIN - 1)] =
+      0.5f * (x[IX(ROWBEGIN, COLBEGIN - 1)] + x[IX(ROWBEGIN - 1, COLBEGIN)]);
+  x[IX(ROWBEGIN - 1, COLEND)] =
+      0.5f * (x[IX(ROWBEGIN, COLEND)] + x[IX(ROWBEGIN - 1, COLEND - 1)]);
+  x[IX(ROWEND, COLBEGIN - 1)] =
+      0.5f * (x[IX(ROWEND - 1, COLBEGIN - 1)] + x[IX(ROWEND, COLBEGIN)]);
+  x[IX(ROWEND, COLEND)] =
+      0.5f * (x[IX(ROWEND - 1, COLEND)] + x[IX(ROWEND, COLEND - 1)]);
 }
 
 void set_bnd(size_t N, MatrixType type, float* x) {
@@ -87,7 +154,7 @@ void sse2_solve(size_t N, MatrixType type, float* x, float* x0, float a,
         _mm_store_ps(x1 + IX(i, j), dest);
       }
     }
-    set_bnd(N, type, x1);
+    SET_BND(N, type, x1);
     SWAP(x, x1);
   }
   free(x1);
@@ -106,7 +173,7 @@ void jac_solve(size_t N, MatrixType type, float* x, float* x0, float a,
             c;
       }
     }
-    set_bnd(N, type, x1);
+    SET_BND(N, type, x1);
     SWAP(x, x1);
   }
 
@@ -123,7 +190,7 @@ void lin_solve(size_t N, MatrixType type, float* x, float* x0, float a,
                       c;
       }
     }
-    set_bnd(N, type, x);
+    SET_BND(N, type, x);
   }
 }
 
@@ -156,7 +223,7 @@ void advect(size_t N, MatrixType type, float* d, float* d0, float* u, float* v,
                     s1 * (t0 * d0[IX(i1, j0)] + t1 * d0[IX(i1, j1)]);
     }
   }
-  set_bnd(N, type, d);
+  SET_BND(N, type, d);
 }
 
 void sse2_project(size_t N, float* u, float* v, float* p, float* div) {
@@ -185,7 +252,7 @@ void sse2_project(size_t N, float* u, float* v, float* p, float* div) {
       _mm_store_ps(div + IX(i, j), result);
     }
   }
-  set_bnd(N, MAT_FLUID, div);
+  SET_BND(N, MAT_FLUID, div);
 
   SOLVE(N, MAT_FLUID, p, div, 1, 4);
 
@@ -219,8 +286,8 @@ void sse2_project(size_t N, float* u, float* v, float* p, float* div) {
       _mm_store_ps(v + IX(i, j), v_current);
     }
   }
-  set_bnd(N, MAT_U_VEL, u);
-  set_bnd(N, MAT_V_VEL, v);
+  SET_BND(N, MAT_U_VEL, u);
+  SET_BND(N, MAT_V_VEL, v);
 }
 
 void project(size_t N, float* u, float* v, float* p, float* div) {
@@ -233,8 +300,8 @@ void project(size_t N, float* u, float* v, float* p, float* div) {
       p[IX(i, j)] = 0;
     }
   }
-  set_bnd(N, MAT_FLUID, div);
-  set_bnd(N, MAT_FLUID, p);
+  SET_BND(N, MAT_FLUID, div);
+  SET_BND(N, MAT_FLUID, p);
 
   SOLVE(N, MAT_FLUID, p, div, 1, 4);
 
@@ -244,13 +311,13 @@ void project(size_t N, float* u, float* v, float* p, float* div) {
       v[IX(i, j)] -= 0.5f * N * (p[IX(i, j + 1)] - p[IX(i, j - 1)]);
     }
   }
-  set_bnd(N, MAT_U_VEL, u);
-  set_bnd(N, MAT_V_VEL, v);
+  SET_BND(N, MAT_U_VEL, u);
+  SET_BND(N, MAT_V_VEL, v);
 }
 
 void dens_step(size_t N, float* x, float* x0, float* u, float* v, float diff,
                float dt) {
-  add_source(N, x, x0, dt);
+  ADD_SOURCE(N, x, x0, dt);
   SWAP(x0, x);
   diffuse(N, MAT_FLUID, x, x0, diff, dt);
   SWAP(x0, x);
@@ -259,8 +326,8 @@ void dens_step(size_t N, float* x, float* x0, float* u, float* v, float diff,
 
 void vel_step(size_t N, float* u, float* v, float* u0, float* v0, float visc,
               float dt) {
-  add_source(N, u, u0, dt);
-  add_source(N, v, v0, dt);
+  ADD_SOURCE(N, u, u0, dt);
+  ADD_SOURCE(N, v, v0, dt);
   SWAP(u0, u);
   diffuse(N, MAT_U_VEL, u, u0, visc, dt);
   SWAP(v0, v);
