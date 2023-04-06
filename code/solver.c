@@ -1,6 +1,7 @@
 #include "solver.h"
 
 #include <immintrin.h>
+#include <stdalign.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -12,6 +13,8 @@
 #define ADD_SOURCE(N, x, s, dt) ADDER(N, x, s, dt)
 #define BOUNDER sse2_set_bnd
 #define SET_BND(N, type, x) BOUNDER(N, type, x)
+#define ADVECTOR sse4_2_advect
+#define ADVECT(N, type, d, d0, u, v, dt) ADVECTOR(N, type, d, d0, u, v, dt)
 
 typedef enum matrix_type { MAT_FLUID, MAT_U_VEL, MAT_V_VEL } MatrixType;
 
@@ -274,6 +277,85 @@ void diffuse(size_t N, MatrixType type, float* x, float* x0, float diff,
   SOLVE(N, type, x, x0, a, 1 + 4 * a);
 }
 
+// SSE2 is not powerful enough to meaningfully vectorize this function; the
+// oldest extension set that makes sense to use to implement this is SSE4.2
+// (ish). SSE4.1 might be enough but really what I'm targeting is GCC's
+// x86-64-v3 feature level, which lumps together a bunch of extensions, the
+// most recent of which is SSE4.2.
+void sse4_2_advect(size_t N, MatrixType type, float* d, float* d0, float* u,
+                   float* v, float dt) {
+  alignas(16) static const float j_init[4] = {COLBEGIN, COLBEGIN + 1.0f,
+                                              COLBEGIN + 2.0f, COLBEGIN + 3.0f},
+                                 x_min[4] = {ROWBEGIN - 0.5f, ROWBEGIN - 0.5f,
+                                             ROWBEGIN - 0.5f, ROWBEGIN - 0.5f},
+                                 y_min[4] = {COLBEGIN - 0.5f, COLBEGIN - 0.5f,
+                                             COLBEGIN - 0.5f, COLBEGIN - 0.5f};
+  __m128 dt0_vec = _mm_set1_ps(dt * N);
+  // NOTE: if the way ROW/COL/END/BEGIN is calculated changes, this will break
+  __m128 x_min_vec = _mm_load_ps(x_min);
+  __m128 x_max_vec = _mm_add_ps(x_min_vec, _mm_set1_ps(N));
+  __m128 y_min_vec = _mm_load_ps(y_min);
+  __m128 y_max_vec = _mm_add_ps(y_min_vec, _mm_set1_ps(N));
+  for (size_t i = ROWBEGIN; i < ROWEND; i++) {
+    __m128 i_vec = _mm_set1_ps(i);
+    __m128 j_vec = _mm_load_ps(j_init);
+    for (size_t j = COLBEGIN; j < COLEND;
+         j += 4, j_vec = _mm_add_ps(j_vec, _mm_set1_ps(4.0f))) {
+      __m128 u_vec = _mm_load_ps(u + IX(i, j));
+      __m128 x_vec = _mm_sub_ps(i_vec, _mm_mul_ps(dt0_vec, u_vec));
+      x_vec = _mm_min_ps(_mm_max_ps(x_vec, x_min_vec), x_max_vec);
+      __m128 s1_vec = _mm_sub_ps(x_vec, _mm_floor_ps(x_vec));
+      __m128 s0_vec = _mm_sub_ps(_mm_set1_ps(1.0f), s1_vec);
+      float i0s[4];
+      _mm_store_ps(i0s, x_vec);
+
+      __m128 v_vec = _mm_load_ps(v + IX(i, j));
+      __m128 y_vec = _mm_sub_ps(j_vec, _mm_mul_ps(dt0_vec, v_vec));
+      y_vec = _mm_min_ps(_mm_max_ps(y_vec, y_min_vec), y_max_vec);
+      __m128 t1_vec = _mm_sub_ps(y_vec, _mm_floor_ps(y_vec));
+      __m128 t0_vec = _mm_sub_ps(_mm_set1_ps(1.0f), t1_vec);
+      float j0s[4];
+      _mm_store_ps(j0s, y_vec);
+
+      // this sucks
+      __m128 d0_i0_j0 = _mm_set_ps(d0[IX((size_t)i0s[3], (size_t)j0s[3])],
+                                   d0[IX((size_t)i0s[2], (size_t)j0s[2])],
+                                   d0[IX((size_t)i0s[1], (size_t)j0s[1])],
+                                   d0[IX((size_t)i0s[0], (size_t)j0s[0])]);
+      __m128 d0_i1_j0 = _mm_set_ps(d0[IX((size_t)i0s[3] + 1, (size_t)j0s[3])],
+                                   d0[IX((size_t)i0s[2] + 1, (size_t)j0s[2])],
+                                   d0[IX((size_t)i0s[1] + 1, (size_t)j0s[1])],
+                                   d0[IX((size_t)i0s[0] + 1, (size_t)j0s[0])]);
+      __m128 d0_i0_j1 = _mm_set_ps(d0[IX((size_t)i0s[3], (size_t)j0s[3] + 1)],
+                                   d0[IX((size_t)i0s[2], (size_t)j0s[2] + 1)],
+                                   d0[IX((size_t)i0s[1], (size_t)j0s[1] + 1)],
+                                   d0[IX((size_t)i0s[0], (size_t)j0s[0] + 1)]);
+      __m128 d0_i1_j1 =
+          _mm_set_ps(d0[IX((size_t)i0s[3] + 1, (size_t)j0s[3] + 1)],
+                     d0[IX((size_t)i0s[2] + 1, (size_t)j0s[2] + 1)],
+                     d0[IX((size_t)i0s[1] + 1, (size_t)j0s[1] + 1)],
+                     d0[IX((size_t)i0s[0] + 1, (size_t)j0s[0] + 1)]);
+
+      _mm_store_ps(
+          d + IX(i, j),
+          _mm_add_ps(
+              _mm_mul_ps(s0_vec, _mm_add_ps(_mm_mul_ps(t0_vec, d0_i0_j0),
+                                            _mm_mul_ps(t1_vec, d0_i0_j1))),
+              _mm_mul_ps(s1_vec, _mm_add_ps(_mm_mul_ps(t0_vec, d0_i1_j0),
+                                            _mm_mul_ps(t1_vec, d0_i1_j1)))));
+    }
+  }
+  SET_BND(N, type, d);
+}
+
+// the compiler is smart enough to turn the if statements into calls to minss
+// and maxss; there is little to no benefit to using them explicitly. you could
+// use roundss and subss to get the fractional component of x and y, but all
+// you'd be saving is one int-to-float conversion, which has roughly the same
+// latency and throughput. we do however do that above because we should really
+// be converting to 64-bit integers, which are too big to fit 4 of them into a
+// single xmm register. there also isn't a way to convert packed floats to
+// packed 64-bit integers until AVX512.
 void advect(size_t N, MatrixType type, float* d, float* d0, float* u, float* v,
             float dt) {
   float dt0 = dt * N;
@@ -393,7 +475,7 @@ void dens_step(size_t N, float* x, float* x0, float* u, float* v, float diff,
   SWAP(x0, x);
   diffuse(N, MAT_FLUID, x, x0, diff, dt);
   SWAP(x0, x);
-  advect(N, MAT_FLUID, x, x0, u, v, dt);
+  ADVECT(N, MAT_FLUID, x, x0, u, v, dt);
 }
 
 void vel_step(size_t N, float* u, float* v, float* u0, float* v0, float visc,
@@ -407,7 +489,7 @@ void vel_step(size_t N, float* u, float* v, float* u0, float* v0, float visc,
   PROJECT(N, u, v, u0, v0);
   SWAP(u0, u);
   SWAP(v0, v);
-  advect(N, MAT_U_VEL, u, u0, u0, v0, dt);
-  advect(N, MAT_V_VEL, v, v0, u0, v0, dt);
+  ADVECT(N, MAT_U_VEL, u, u0, u0, v0, dt);
+  ADVECT(N, MAT_V_VEL, v, v0, u0, v0, dt);
   PROJECT(N, u, v, u0, v0);
 }
