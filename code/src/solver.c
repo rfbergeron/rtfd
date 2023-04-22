@@ -196,7 +196,9 @@ void set_bnd(size_t N, MatrixType type, float* x) {
 
 void sse2_solve(size_t N, MatrixType type, float* x, float* x0, float a,
                 float c) {
-  float* x1 = aligned_alloc(64, ACTUALSIZE * sizeof(float));
+  size_t size = ACTUALSIZE;
+  if (size % 16 != 0) size += 16 - size % 16;
+  float* x1 = aligned_alloc(64, size * sizeof(float));
   __m128 c_inv_vec = _mm_set1_ps(1.0f / c), a_vec = _mm_set1_ps(a);
 
   for (size_t k = 0; k < 20; k++) {
@@ -239,7 +241,9 @@ void sse2_solve(size_t N, MatrixType type, float* x, float* x0, float a,
 
 void jac_solve(size_t N, MatrixType type, float* x, float* x0, float a,
                float c) {
-  float* x1 = aligned_alloc(64, ACTUALSIZE * sizeof(float));
+  size_t size = ACTUALSIZE;
+  if (size % 16 != 0) size += 16 - size % 16;
+  float* x1 = aligned_alloc(64, size * sizeof(float));
 
   for (size_t k = 0; k < 20; k++) {
     for (size_t i = ROWBEGIN; i < ROWEND; i++) {

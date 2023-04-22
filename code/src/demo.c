@@ -14,10 +14,15 @@
   =======================================================================
 */
 
-#include <GL/glut.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
+
+#ifndef USE_GLAD
+#include <GL/glut.h>
+#else
+#include "renderer.h"
+#endif
 
 #include "solver.h"
 
@@ -26,15 +31,19 @@
 static size_t N;
 static float dt, diff, visc;
 static float force, source;
+#ifndef USE_GLAD
 static bool dvel;
+#endif
 
 static float *u, *v, *u_prev, *v_prev;
 static float *dens, *dens_prev;
 
+#ifndef USE_GLAD
 static int win_id;
 static int win_x, win_y;
 static int mouse_down[3];
 static int omx, omy, mx, my;
+#endif
 
 /*
   ----------------------------------------------------------------------
@@ -75,6 +84,7 @@ static int allocate_data(void) {
   return 0;
 }
 
+#ifndef USE_GLAD
 /*
   ----------------------------------------------------------------------
    OpenGL specific drawing routines
@@ -271,6 +281,7 @@ static void open_glut_window(void) {
   glutIdleFunc(idle_func);
   glutDisplayFunc(display_func);
 }
+#endif
 
 /*
   ----------------------------------------------------------------------
@@ -279,7 +290,9 @@ static void open_glut_window(void) {
 */
 
 int main(int argc, char **argv) {
+#ifndef USE_GLAD
   glutInit(&argc, argv);
+#endif
 
   if (argc != 1 && argc != 6) {
     fprintf(stderr, "usage : %s N dt diff visc force source\n", argv[0]);
@@ -322,16 +335,32 @@ int main(int argc, char **argv) {
   printf("\t Clear the simulation by pressing the 'c' key\n");
   printf("\t Quit by pressing the 'q' key\n");
 
-  dvel = 0;
-
   if (allocate_data()) exit(1);
   clear_data();
 
+#ifndef USE_GLAD
+  dvel = 0;
   win_x = 512;
   win_y = 512;
   open_glut_window();
 
   glutMainLoop();
+#else
+  Renderer *renderer = renderer_init(N, 512, 512, "Alias | wavefront");
+  if (renderer == NULL) exit(1);
+
+  while (!renderer_should_close(renderer)) {
+    renderer_get_input(renderer, dens_prev, u_prev, v_prev);
+    if (renderer_should_clear(renderer)) clear_data();
+    vel_step(N, u, v, u_prev, v_prev, visc, dt);
+    dens_step(N, dens, dens_prev, u, v, diff, dt);
+    renderer_update(renderer, dens, u, v);
+    renderer_draw(renderer);
+  }
+
+  renderer_destroy(renderer);
+  free_data();
+#endif
 
   exit(0);
 }
