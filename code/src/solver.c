@@ -3,7 +3,6 @@
 #include <immintrin.h>
 #include <stdalign.h>
 #include <stdlib.h>
-#include <string.h>
 
 #define IX(i, j) ((sim_size + 2 * col_border) * (i) + (j))
 #define ACTUAL_SIZE ((sim_size + 2 * col_border) * (sim_size + 2 * row_border))
@@ -13,11 +12,11 @@
 #define ROW_END (sim_size + row_border)
 
 #define SOLVER sse2_solve
-#define SOLVE(sim_size, row_border, col_border, type, x, x0, a, c) \
-  SOLVER(sim_size, row_border, col_border, type, x, x0, a, c)
+#define SOLVE(sim_size, row_border, col_border, type, x, x0, x1, a, c) \
+  SOLVER(sim_size, row_border, col_border, type, x, x0, x1, a, c)
 #define PROJECTOR sse2_project
-#define PROJECT(sim_size, row_border, col_border, u, v, p, div) \
-  PROJECTOR(sim_size, row_border, col_border, u, v, p, div)
+#define PROJECT(sim_size, row_border, col_border, u, v, p, div, scratch) \
+  PROJECTOR(sim_size, row_border, col_border, u, v, p, div, scratch)
 #define ADDER add_source
 #define ADD_SOURCE(sim_size, row_border, col_border, x, s, dt, multiplier) \
   ADDER(sim_size, row_border, col_border, x, s, dt, multiplier)
@@ -228,10 +227,8 @@ static void set_bnd(size_t sim_size, size_t row_border, size_t col_border,
 }
 
 void sse2_solve(size_t sim_size, size_t row_border, size_t col_border,
-                MatrixType type, float* x, float* x0, float a, float c) {
-  size_t size = ACTUAL_SIZE;
-  if (size % 16 != 0) size += 16 - size % 16;
-  float* x1 = aligned_alloc(64, size * sizeof(float));
+                MatrixType type, float* x, float* x0, float* x1, float a,
+                float c) {
   __m128 c_inv_vec = _mm_set1_ps(1.0f / c), a_vec = _mm_set1_ps(a);
 
   for (size_t k = 0; k < 20; k++) {
@@ -269,15 +266,11 @@ void sse2_solve(size_t sim_size, size_t row_border, size_t col_border,
     SET_BND(sim_size, row_border, col_border, type, x1);
     SWAP(x, x1);
   }
-  free(x1);
 }
 
 static void jac_solve(size_t sim_size, size_t row_border, size_t col_border,
-                      MatrixType type, float* x, float* x0, float a, float c) {
-  size_t size = ACTUAL_SIZE;
-  if (size % 16 != 0) size += 16 - size % 16;
-  float* x1 = aligned_alloc(64, size * sizeof(float));
-
+                      MatrixType type, float* x, float* x0, float* x1, float a,
+                      float c) {
   for (size_t k = 0; k < 20; k++) {
     for (size_t i = ROW_BEGIN; i < ROW_END; i++) {
       for (size_t j = COL_BEGIN; j < COL_END; j++) {
@@ -290,12 +283,12 @@ static void jac_solve(size_t sim_size, size_t row_border, size_t col_border,
     SET_BND(sim_size, row_border, col_border, type, x1);
     SWAP(x, x1);
   }
-
-  free(x1);
 }
 
 static void lin_solve(size_t sim_size, size_t row_border, size_t col_border,
-                      MatrixType type, float* x, float* x0, float a, float c) {
+                      MatrixType type, float* x, float* x0, float* x1, float a,
+                      float c) {
+  (void)x1;  // unused parameter
   for (size_t k = 0; k < 20; k++) {
     for (size_t i = ROW_BEGIN; i < ROW_END; i++) {
       for (size_t j = COL_BEGIN; j < COL_END; j++) {
@@ -309,10 +302,10 @@ static void lin_solve(size_t sim_size, size_t row_border, size_t col_border,
 }
 
 static void diffuse(size_t sim_size, size_t row_border, size_t col_border,
-                    MatrixType type, float* x, float* x0, float diff,
+                    MatrixType type, float* x, float* x0, float* x1, float diff,
                     float dt) {
   float a = dt * diff * sim_size * sim_size;
-  SOLVE(sim_size, row_border, col_border, type, x, x0, a, 1 + 4 * a);
+  SOLVE(sim_size, row_border, col_border, type, x, x0, x1, a, 1 + 4 * a);
 }
 
 // SSE2 is not powerful enough to meaningfully vectorize this function; the
@@ -323,21 +316,15 @@ static void diffuse(size_t sim_size, size_t row_border, size_t col_border,
 static void sse4_2_advect(size_t sim_size, size_t row_border, size_t col_border,
                           MatrixType type, float* d, float* d0, float* u,
                           float* v, float dt) {
-  alignas(16) const float j_init[4] = {COL_BEGIN, COL_BEGIN + 1.0f,
-                                       COL_BEGIN + 2.0f, COL_BEGIN + 3.0f},
-                          x_min[4] = {ROW_BEGIN - 0.5f, ROW_BEGIN - 0.5f,
-                                      ROW_BEGIN - 0.5f, ROW_BEGIN - 0.5f},
-                          y_min[4] = {COL_BEGIN - 0.5f, COL_BEGIN - 0.5f,
-                                      COL_BEGIN - 0.5f, COL_BEGIN - 0.5f};
   __m128 dt0_vec = _mm_set1_ps(dt * sim_size);
-  // NOTE: if the way ROW/COL/END/BEGIN is calculated changes, this will break
-  __m128 x_min_vec = _mm_load_ps(x_min);
-  __m128 x_max_vec = _mm_add_ps(x_min_vec, _mm_set1_ps(sim_size));
-  __m128 y_min_vec = _mm_load_ps(y_min);
-  __m128 y_max_vec = _mm_add_ps(y_min_vec, _mm_set1_ps(sim_size));
+  __m128 x_min_vec = _mm_set1_ps(ROW_BEGIN - 0.5f);
+  __m128 x_max_vec = _mm_set1_ps(ROW_END - 0.5f);
+  __m128 y_min_vec = _mm_set1_ps(COL_BEGIN - 0.5f);
+  __m128 y_max_vec = _mm_set1_ps(COL_END - 0.5f);
   for (size_t i = ROW_BEGIN; i < ROW_END; i++) {
     __m128 i_vec = _mm_set1_ps(i);
-    __m128 j_vec = _mm_load_ps(j_init);
+    __m128 j_vec = _mm_set_ps(COL_BEGIN + 3.0f, COL_BEGIN + 2.0f,
+                              COL_BEGIN + 1.0f, COL_BEGIN);
     for (size_t j = COL_BEGIN; j < COL_END;
          j += 4, j_vec = _mm_add_ps(j_vec, _mm_set1_ps(4.0f))) {
       __m128 u_vec = _mm_load_ps(u + IX(i, j));
@@ -423,9 +410,10 @@ static void advect(size_t sim_size, size_t row_border, size_t col_border,
 }
 
 static void sse2_project(size_t sim_size, size_t row_border, size_t col_border,
-                         float* u, float* v, float* p, float* div) {
+                         float* u, float* v, float* p, float* div,
+                         float* scratch) {
   __m128 multiplier = _mm_set1_ps(-0.5f / sim_size);
-  memset(p, 0, ACTUAL_SIZE * sizeof(float));
+  for (size_t i = 0, size = ACTUAL_SIZE; i < size; i++) p[i] = 0.0f;
   for (size_t i = ROW_BEGIN; i < ROW_END; i++) {
     for (size_t j = COL_BEGIN; j < COL_END; j += 4) {
       __m128 u_above = _mm_load_ps(u + IX(i + 1, j));
@@ -449,7 +437,7 @@ static void sse2_project(size_t sim_size, size_t row_border, size_t col_border,
   }
   SET_BND(sim_size, row_border, col_border, SLV_MAT_D, div);
 
-  SOLVE(sim_size, row_border, col_border, SLV_MAT_D, p, div, 1, 4);
+  SOLVE(sim_size, row_border, col_border, SLV_MAT_D, p, div, scratch, 1, 4);
 
   multiplier = _mm_set1_ps(0.5f * sim_size);
   for (size_t i = ROW_BEGIN; i < ROW_END; i++) {
@@ -486,7 +474,7 @@ static void sse2_project(size_t sim_size, size_t row_border, size_t col_border,
 }
 
 static void project(size_t sim_size, size_t row_border, size_t col_border,
-                    float* u, float* v, float* p, float* div) {
+                    float* u, float* v, float* p, float* div, float* scratch) {
   for (size_t i = ROW_BEGIN; i < ROW_END; i++) {
     for (size_t j = COL_BEGIN; j < COL_END; j++) {
       div[IX(i, j)] = -0.5f *
@@ -499,7 +487,7 @@ static void project(size_t sim_size, size_t row_border, size_t col_border,
   SET_BND(sim_size, row_border, col_border, SLV_MAT_D, div);
   SET_BND(sim_size, row_border, col_border, SLV_MAT_D, p);
 
-  SOLVE(sim_size, row_border, col_border, SLV_MAT_D, p, div, 1, 4);
+  SOLVE(sim_size, row_border, col_border, SLV_MAT_D, p, div, scratch, 1, 4);
 
   for (size_t i = ROW_BEGIN; i < ROW_END; i++) {
     for (size_t j = COL_BEGIN; j < COL_END; j++) {
@@ -516,7 +504,7 @@ void solver_dens_step(Solver* solver) {
              solver->d, solver->d_prev, solver->dt, solver->source);
   SWAP(solver->d_prev, solver->d);
   diffuse(solver->sim_size, solver->row_border, solver->col_border, SLV_MAT_D,
-          solver->d, solver->d_prev, solver->diff, solver->dt);
+          solver->d, solver->d_prev, solver->u_prev, solver->diff, solver->dt);
   SWAP(solver->d_prev, solver->d);
   ADVECT(solver->sim_size, solver->row_border, solver->col_border, SLV_MAT_D,
          solver->d, solver->d_prev, solver->u, solver->v, solver->dt);
@@ -529,12 +517,12 @@ void solver_vel_step(Solver* solver) {
              solver->v, solver->v_prev, solver->dt, solver->force);
   SWAP(solver->u_prev, solver->u);
   diffuse(solver->sim_size, solver->row_border, solver->col_border, SLV_MAT_U,
-          solver->u, solver->u_prev, solver->visc, solver->dt);
+          solver->u, solver->u_prev, solver->d_prev, solver->visc, solver->dt);
   SWAP(solver->v_prev, solver->v);
   diffuse(solver->sim_size, solver->row_border, solver->col_border, SLV_MAT_V,
-          solver->v, solver->v_prev, solver->visc, solver->dt);
+          solver->v, solver->v_prev, solver->d_prev, solver->visc, solver->dt);
   PROJECT(solver->sim_size, solver->row_border, solver->col_border, solver->u,
-          solver->v, solver->u_prev, solver->v_prev);
+          solver->v, solver->u_prev, solver->v_prev, solver->d_prev);
   SWAP(solver->u_prev, solver->u);
   SWAP(solver->v_prev, solver->v);
   ADVECT(solver->sim_size, solver->row_border, solver->col_border, SLV_MAT_U,
@@ -542,7 +530,7 @@ void solver_vel_step(Solver* solver) {
   ADVECT(solver->sim_size, solver->row_border, solver->col_border, SLV_MAT_V,
          solver->v, solver->v_prev, solver->u_prev, solver->v_prev, solver->dt);
   PROJECT(solver->sim_size, solver->row_border, solver->col_border, solver->u,
-          solver->v, solver->u_prev, solver->v_prev);
+          solver->v, solver->u_prev, solver->v_prev, solver->d_prev);
 }
 
 float* solver_at(Solver* solver, size_t x, size_t y, MatrixType type) {
@@ -570,22 +558,13 @@ float* solver_at(Solver* solver, size_t x, size_t y, MatrixType type) {
 void solver_clear(Solver* solver, MatrixType type) {
   const size_t sim_size = solver->sim_size, row_border = solver->row_border,
                col_border = solver->col_border;
-  switch (type) {
-    case SLV_MAT_ALL:
-      for (size_t i = 0, size = ACTUAL_SIZE; i < size; i++)
-        solver->u[i] = solver->v[i] = solver->d[i] = solver->u_prev[i] =
-            solver->v_prev[i] = solver->d_prev[i] = 0.0f;
-      break;
-    case SLV_MAT_CURR:
-      for (size_t i = 0, size = ACTUAL_SIZE; i < size; i++)
-        solver->u[i] = solver->v[i] = solver->d[i] = 0.0f;
-      break;
-    case SLV_MAT_PREV:
-      for (size_t i = 0, size = ACTUAL_SIZE; i < size; i++)
-        solver->u_prev[i] = solver->v_prev[i] = solver->d_prev[i] = 0.0f;
-      break;
-    default:
-      abort();
+  for (size_t i = 0, size = ACTUAL_SIZE; i < size; i++) {
+    if (type & SLV_MAT_D) solver->d[i] = 0.0f;
+    if (type & SLV_MAT_U) solver->u[i] = 0.0f;
+    if (type & SLV_MAT_V) solver->v[i] = 0.0f;
+    if (type & SLV_MAT_D0) solver->d_prev[i] = 0.0f;
+    if (type & SLV_MAT_U0) solver->u_prev[i] = 0.0f;
+    if (type & SLV_MAT_V0) solver->v_prev[i] = 0.0f;
   }
 }
 

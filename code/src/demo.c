@@ -55,14 +55,18 @@ int main(int argc, char **argv) {
   Renderer *renderer =
       renderer_init(sim_size, WIN_WIDTH, WIN_HEIGHT, WIN_TITLE);
   if (renderer == NULL) {
-      solver_destroy(solver);
-      exit(EXIT_FAILURE);
+    solver_destroy(solver);
+    exit(EXIT_FAILURE);
   }
 
   while (!renderer_should_close(renderer)) {
+    if (renderer_should_clear(renderer)) solver_clear(solver, SLV_MAT_CURR);
+    solver_clear(solver, SLV_MAT_U0 | SLV_MAT_V0);
     renderer_get_input(renderer, solver);
-    if (renderer_should_clear(renderer)) solver_clear(solver, SLV_MAT_ALL);
     solver_vel_step(solver);
+    // d_prev is used as scratch space for jacobi solvers; clear it here
+    solver_clear(solver, SLV_MAT_D0);
+    renderer_get_input(renderer, solver);
     solver_dens_step(solver);
     renderer_update(renderer, solver);
     renderer_draw(renderer);

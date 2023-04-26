@@ -460,8 +460,6 @@ void renderer_get_input(Renderer *renderer, Solver *solver) {
   // in screen coordinates relative to the upper-left corner of the window
   glfwGetWindowSize(renderer->window, &width, &height);
 
-  solver_clear(solver, SLV_MAT_PREV);
-
   if (renderer->xpos < 0 || renderer->xpos >= width || renderer->ypos < 0 ||
       renderer->ypos >= height)
     return;
