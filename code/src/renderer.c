@@ -4,24 +4,22 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "solver.h"
-
 // density vertex contents do not have borders, but there is an extra row/col
-#define DENS_IX(i, j) (3 * (renderer->N + 1) * (i) + 3 * (j))
+#define DENS_IX(i, j) (3 * (renderer->sim_size + 1) * (i) + 3 * (j))
 // triangle array contents do not have borders; iterated in pairs; the first
 // triangle in the pair corresponds to the lower-left corner of the cell, and
 // the second to the upper-right corner of the cell
-#define TRIANGLE_IX(i, j) (6 * renderer->N * (i) + 6 * (j))
+#define TRIANGLE_IX(i, j) (6 * renderer->sim_size * (i) + 6 * (j))
 // velocity array contents do not have borders; iterated in pairs; the first
 // vertex should always be centered on the cell and the second should be moved
 // based on the velocity
-#define VEL_IX(i, j) (4 * renderer->N * (i) + 4 * (j))
+#define VEL_IX(i, j) (4 * renderer->sim_size * (i) + 4 * (j))
 // extra row and column of vertices for top and left borders
-#define DENS_VERTEX_COUNT ((renderer->N + 1) * (renderer->N + 1))
+#define DENS_VERTEX_COUNT ((renderer->sim_size + 1) * (renderer->sim_size + 1))
 // 2 triangles per non-border cell
-#define DENS_TRIANGLE_COUNT (2 * renderer->N * renderer->N)
+#define DENS_TRIANGLE_COUNT (2 * renderer->sim_size * renderer->sim_size)
 // 2 vertices per line, one line per non-border cell
-#define VEL_VERTEX_COUNT (2 * renderer->N * renderer->N)
+#define VEL_VERTEX_COUNT (2 * renderer->sim_size * renderer->sim_size)
 
 #define LOG_BUFFER_SIZE 512
 #define SHADER_BUFFER_SIZE 4096
@@ -35,19 +33,19 @@ static void generate_dens_triangles(Renderer *renderer) {
   // a logical row in the array corresponds to a row of vertices on the screen
   // from left to right. rows should start from the bottom of the screen and
   // move up to the top.
-  for (size_t j = 0; j <= renderer->N; ++j) {
-    for (size_t i = 0; i <= renderer->N; ++i) {
+  for (size_t j = 0; j <= renderer->sim_size; ++j) {
+    for (size_t i = 0; i <= renderer->sim_size; ++i) {
       renderer->dens_vertices[DENS_IX(i, j)] =
-          2.0f * i / (float)renderer->N - 1.0f;
+          2.0f * i / (float)renderer->sim_size - 1.0f;
       renderer->dens_vertices[DENS_IX(i, j) + 1] =
-          2.0f * j / (float)renderer->N - 1.0f;
+          2.0f * j / (float)renderer->sim_size - 1.0f;
       renderer->dens_vertices[DENS_IX(i, j) + 2] = 0;
     }
   }
   // generate triangle indices; the first triangle in the pair should be in the
   // bottom left corner, while the second should be in the top right
-  for (size_t i = 0; i < renderer->N; ++i) {
-    for (size_t j = 0; j < renderer->N; ++j) {
+  for (size_t i = 0; i < renderer->sim_size; ++i) {
+    for (size_t j = 0; j < renderer->sim_size; ++j) {
       renderer->dens_triangles[TRIANGLE_IX(i, j) + 1] =
           renderer->dens_triangles[TRIANGLE_IX(i, j) + 4] =
               DENS_IX(i + 1, j) / 3;
@@ -62,15 +60,15 @@ static void generate_dens_triangles(Renderer *renderer) {
 }
 
 static void generate_vel_lines(Renderer *renderer) {
-  const float half_cell_width = 1.0f / renderer->N;
-  for (size_t i = 0; i < renderer->N; ++i) {
-    for (size_t j = 0; j < renderer->N; ++j) {
+  const float half_cell_width = 1.0f / renderer->sim_size;
+  for (size_t i = 0; i < renderer->sim_size; ++i) {
+    for (size_t j = 0; j < renderer->sim_size; ++j) {
       renderer->vel_vertices[VEL_IX(i, j)] =
           renderer->vel_vertices[VEL_IX(i, j) + 2] =
-              2.0f * i / (float)renderer->N - 1.0f + half_cell_width;
+              2.0f * i / (float)renderer->sim_size - 1.0f + half_cell_width;
       renderer->vel_vertices[VEL_IX(i, j) + 1] =
           renderer->vel_vertices[VEL_IX(i, j) + 3] =
-              2.0f * j / (float)renderer->N - 1.0f + half_cell_width;
+              2.0f * j / (float)renderer->sim_size - 1.0f + half_cell_width;
     }
   }
 }
@@ -303,7 +301,8 @@ static void mouse_button_callback(GLFWwindow *window, int button, int action,
   }
 }
 
-Renderer *renderer_init(size_t N, int width, int height, const char *title) {
+Renderer *renderer_init(size_t sim_size, int width, int height,
+                        const char *title) {
   glfwInit();
   glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
   glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
@@ -341,7 +340,7 @@ Renderer *renderer_init(size_t N, int width, int height, const char *title) {
     return NULL;
   }
 
-  renderer->N = N;
+  renderer->sim_size = sim_size;
   renderer->draw_vel = renderer->should_clear = false;
   renderer->add_dens = renderer->add_vel = false;
 
@@ -403,24 +402,23 @@ void renderer_destroy(Renderer *renderer) {
   glfwTerminate();
 }
 
-void renderer_update(Renderer *renderer, float *d, float *u, float *v) {
-  const size_t N = renderer->N;
+void renderer_update(Renderer *renderer, Solver *solver) {
   // iterate density information separately to account for the extra row/col
-  for (size_t i = 0; i <= renderer->N; ++i) {
-    for (size_t j = 0; j <= renderer->N; ++j) {
+  for (size_t i = 0; i <= renderer->sim_size; ++i) {
+    for (size_t j = 0; j <= renderer->sim_size; ++j) {
       renderer->dens_vertices[DENS_IX(i, j) + 2] =
-          d[IX(i + ROWBEGIN, j + COLBEGIN)];
+          *solver_at(solver, i, j, SLV_MAT_D);
     }
   }
 
-  for (size_t i = 0; i < renderer->N; ++i) {
-    for (size_t j = 0; j < renderer->N; ++j) {
+  for (size_t i = 0; i < renderer->sim_size; ++i) {
+    for (size_t j = 0; j < renderer->sim_size; ++j) {
       renderer->vel_vertices[VEL_IX(i, j) + 2] =
           renderer->vel_vertices[VEL_IX(i, j)] +
-          u[IX(i + ROWBEGIN, j + COLBEGIN)];
+          *solver_at(solver, i, j, SLV_MAT_U);
       renderer->vel_vertices[VEL_IX(i, j) + 3] =
           renderer->vel_vertices[VEL_IX(i, j) + 1] +
-          v[IX(i + ROWBEGIN, j + COLBEGIN)];
+          *solver_at(solver, i, j, SLV_MAT_V);
     }
   }
 
@@ -456,29 +454,29 @@ void renderer_draw(Renderer *renderer) {
   glfwPollEvents();
 }
 
-void renderer_get_input(Renderer *renderer, float *d, float *u, float *v) {
-  const size_t N = renderer->N, size = ACTUALSIZE;
+void renderer_get_input(Renderer *renderer, Solver *solver) {
   int width, height;
   // get window size in screen coordinates; cursor position has been recorded
   // in screen coordinates relative to the upper-left corner of the window
   glfwGetWindowSize(renderer->window, &width, &height);
 
-  for (size_t i = 0; i < size; ++i) d[i] = u[i] = v[i] = 0.0f;
+  solver_clear(solver, SLV_MAT_PREV);
 
-  size_t x = renderer->xpos / width * renderer->N + ROWBEGIN;
-  size_t y = (height - renderer->ypos) / height * renderer->N + COLBEGIN;
-
-  if (x < ROWBEGIN || x >= ROWEND || y < COLBEGIN || y >= COLEND) return;
+  if (renderer->xpos < 0 || renderer->xpos >= width || renderer->ypos < 0 ||
+      renderer->ypos >= height)
+    return;
+  size_t x = renderer->xpos / width * renderer->sim_size;
+  size_t y = (height - renderer->ypos) / height * renderer->sim_size;
 
   if (renderer->add_dens) {
-    d[IX(x, y)] = 100.0f;
+    *solver_at(solver, x, y, SLV_MAT_D0) = 1.0f;
   }
 
   if (renderer->add_vel) {
-    float u_force = 5.0f * (renderer->xpos - renderer->old_xpos);
-    float v_force = 5.0f * (renderer->old_ypos - renderer->ypos);
-    u[IX(x, y)] = u_force;
-    v[IX(x, y)] = v_force;
+    float u_force = (renderer->xpos - renderer->old_xpos);
+    float v_force = (renderer->old_ypos - renderer->ypos);
+    *solver_at(solver, x, y, SLV_MAT_U0) = u_force;
+    *solver_at(solver, x, y, SLV_MAT_V0) = v_force;
   }
 }
 

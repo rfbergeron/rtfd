@@ -5,19 +5,28 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define IX(i, j) ((sim_size + 2 * col_border) * (i) + (j))
+#define ACTUAL_SIZE ((sim_size + 2 * col_border) * (sim_size + 2 * row_border))
+#define COL_BEGIN col_border
+#define COL_END (sim_size + col_border)
+#define ROW_BEGIN row_border
+#define ROW_END (sim_size + row_border)
+
 #define SOLVER sse2_solve
-#define SOLVE(N, type, x, x0, a, c) SOLVER(N, type, x, x0, a, c)
+#define SOLVE(sim_size, row_border, col_border, type, x, x0, a, c) \
+  SOLVER(sim_size, row_border, col_border, type, x, x0, a, c)
 #define PROJECTOR sse2_project
-#define PROJECT(N, u, v, p, div) PROJECTOR(N, u, v, p, div)
+#define PROJECT(sim_size, row_border, col_border, u, v, p, div) \
+  PROJECTOR(sim_size, row_border, col_border, u, v, p, div)
 #define ADDER add_source
-#define ADD_SOURCE(N, x, s, dt) ADDER(N, x, s, dt)
+#define ADD_SOURCE(sim_size, row_border, col_border, x, s, dt, multiplier) \
+  ADDER(sim_size, row_border, col_border, x, s, dt, multiplier)
 #define BOUNDER sse2_set_bnd
-#define SET_BND(N, type, x) BOUNDER(N, type, x)
+#define SET_BND(sim_size, row_border, col_border, type, x) \
+  BOUNDER(sim_size, row_border, col_border, type, x)
 #define ADVECTOR sse4_2_advect
-#define ADVECT(N, type, d, d0, u, v, dt) ADVECTOR(N, type, d, d0, u, v, dt)
-
-typedef enum matrix_type { MAT_FLUID, MAT_U_VEL, MAT_V_VEL } MatrixType;
-
+#define ADVECT(sim_size, row_border, col_border, type, d, d0, u, v, dt) \
+  ADVECTOR(sim_size, row_border, col_border, type, d, d0, u, v, dt)
 #define SWAP(x0, x)  \
   {                  \
     float* tmp = x0; \
@@ -27,9 +36,11 @@ typedef enum matrix_type { MAT_FLUID, MAT_U_VEL, MAT_V_VEL } MatrixType;
 
 // NOTE: vectorizing this one by hand is not necessary; it is simple enough that
 // the compiler can figure it out on its own
-void sse2_add_source(size_t N, float* x, float* s, float dt) {
-  __m128 dt_vec = _mm_set1_ps(dt);
-  for (size_t i = 0, size = ACTUALSIZE; i < size; i += 4) {
+static void sse2_add_source(size_t sim_size, size_t row_border,
+                            size_t col_border, float* x, float* s, float dt,
+                            float multiplier) {
+  __m128 dt_vec = _mm_set1_ps(dt * multiplier);
+  for (size_t i = 0, size = ACTUAL_SIZE; i < size; i += 4) {
     __m128 x_current = _mm_load_ps(x + i), s_current = _mm_load_ps(s + i);
     s_current = _mm_mul_ps(s_current, dt_vec);
     x_current = _mm_add_ps(x_current, s_current);
@@ -37,173 +48,195 @@ void sse2_add_source(size_t N, float* x, float* s, float dt) {
   }
 }
 
-void add_source(size_t N, float* x, float* s, float dt) {
-  for (size_t i = 0, size = ACTUALSIZE; i < size; i++) x[i] += dt * s[i];
+static void add_source(size_t sim_size, size_t row_border, size_t col_border,
+                       float* x, float* s, float dt, float multiplier) {
+  for (size_t i = 0, size = ACTUAL_SIZE; i < size; i++)
+    x[i] += dt * multiplier * s[i];
 }
 
 // GCC does not hoist the conditions of the ternary operator out of the loops,
 // nor does it turn the subps instructions into the magic xorps instruction used
 // with scalar operands. It also does not hoist the condition out if the ternary
 // operators are replaced with if statements.
-void sse2_set_bnd_alt(size_t N, MatrixType type, float* x) {
-  for (size_t j = COLBEGIN; j < COLEND; j += 4) {
+static void sse2_set_bnd_alt(size_t sim_size, size_t row_border,
+                             size_t col_border, MatrixType type, float* x) {
+  for (size_t j = COL_BEGIN; j < COL_END; j += 4) {
     _mm_store_ps(
-        x + IX(ROWBEGIN - 1, j),
-        type == MAT_U_VEL
-            ? _mm_sub_ps(_mm_setzero_ps(), _mm_load_ps(x + IX(ROWBEGIN, j)))
-            : _mm_load_ps(x + IX(ROWBEGIN, j)));
+        x + IX(ROW_BEGIN - 1, j),
+        (type == SLV_MAT_U || type == SLV_MAT_U0)
+            ? _mm_sub_ps(_mm_setzero_ps(), _mm_load_ps(x + IX(ROW_BEGIN, j)))
+            : _mm_load_ps(x + IX(ROW_BEGIN, j)));
     _mm_store_ps(
-        x + IX(ROWEND, j),
-        type == MAT_U_VEL
-            ? _mm_sub_ps(_mm_setzero_ps(), _mm_load_ps(x + IX(ROWEND - 1, j)))
-            : _mm_load_ps(x + IX(ROWEND - 1, j)));
+        x + IX(ROW_END, j),
+        (type == SLV_MAT_U || type == SLV_MAT_U0)
+            ? _mm_sub_ps(_mm_setzero_ps(), _mm_load_ps(x + IX(ROW_END - 1, j)))
+            : _mm_load_ps(x + IX(ROW_END - 1, j)));
   }
-  for (size_t i = ROWBEGIN; i < ROWEND; ++i) {
-    x[IX(i, COLBEGIN - 1)] =
-        type == MAT_V_VEL ? -x[IX(i, COLBEGIN)] : x[IX(i, COLBEGIN)];
-    x[IX(i, COLEND)] =
-        type == MAT_V_VEL ? -x[IX(i, COLEND - 1)] : x[IX(i, COLEND - 1)];
+  for (size_t i = ROW_BEGIN; i < ROW_END; ++i) {
+    x[IX(i, COL_BEGIN - 1)] = (type == SLV_MAT_V || type == SLV_MAT_V0)
+                                  ? -x[IX(i, COL_BEGIN)]
+                                  : x[IX(i, COL_BEGIN)];
+    x[IX(i, COL_END)] = (type == SLV_MAT_V || type == SLV_MAT_V0)
+                            ? -x[IX(i, COL_END - 1)]
+                            : x[IX(i, COL_END - 1)];
   }
-  x[IX(ROWBEGIN - 1, COLBEGIN - 1)] =
-      0.5f * (x[IX(ROWBEGIN, COLBEGIN - 1)] + x[IX(ROWBEGIN - 1, COLBEGIN)]);
-  x[IX(ROWBEGIN - 1, COLEND)] =
-      0.5f * (x[IX(ROWBEGIN, COLEND)] + x[IX(ROWBEGIN - 1, COLEND - 1)]);
-  x[IX(ROWEND, COLBEGIN - 1)] =
-      0.5f * (x[IX(ROWEND - 1, COLBEGIN - 1)] + x[IX(ROWEND, COLBEGIN)]);
-  x[IX(ROWEND, COLEND)] =
-      0.5f * (x[IX(ROWEND - 1, COLEND)] + x[IX(ROWEND, COLEND - 1)]);
+  x[IX(ROW_BEGIN - 1, COL_BEGIN - 1)] =
+      0.5f *
+      (x[IX(ROW_BEGIN, COL_BEGIN - 1)] + x[IX(ROW_BEGIN - 1, COL_BEGIN)]);
+  x[IX(ROW_BEGIN - 1, COL_END)] =
+      0.5f * (x[IX(ROW_BEGIN, COL_END)] + x[IX(ROW_BEGIN - 1, COL_END - 1)]);
+  x[IX(ROW_END, COL_BEGIN - 1)] =
+      0.5f * (x[IX(ROW_END - 1, COL_BEGIN - 1)] + x[IX(ROW_END, COL_BEGIN)]);
+  x[IX(ROW_END, COL_END)] =
+      0.5f * (x[IX(ROW_END - 1, COL_END)] + x[IX(ROW_END, COL_END - 1)]);
 }
 
-void sse2_set_bnd(size_t N, MatrixType type, float* x) {
+static void sse2_set_bnd(size_t sim_size, size_t row_border, size_t col_border,
+                         MatrixType type, float* x) {
   switch (type) {
-    case MAT_FLUID:
-      for (size_t j = COLBEGIN; j < COLEND; j += 4) {
-        _mm_store_ps(x + IX(ROWBEGIN - 1, j), _mm_load_ps(x + IX(ROWBEGIN, j)));
-        _mm_store_ps(x + IX(ROWEND, j), _mm_load_ps(x + IX(ROWEND - 1, j)));
+    case SLV_MAT_D:
+    case SLV_MAT_D0:
+      for (size_t j = COL_BEGIN; j < COL_END; j += 4) {
+        _mm_store_ps(x + IX(ROW_BEGIN - 1, j),
+                     _mm_load_ps(x + IX(ROW_BEGIN, j)));
+        _mm_store_ps(x + IX(ROW_END, j), _mm_load_ps(x + IX(ROW_END - 1, j)));
       }
-      for (size_t i = ROWBEGIN; i < ROWEND; ++i) {
-        x[IX(i, COLBEGIN - 1)] = x[IX(i, COLBEGIN)];
-        x[IX(i, COLEND)] = x[IX(i, COLEND - 1)];
-      }
-      break;
-    case MAT_U_VEL:
-      for (size_t j = COLBEGIN; j < COLEND; j += 4) {
-        _mm_store_ps(
-            x + IX(ROWBEGIN - 1, j),
-            _mm_mul_ps(_mm_set1_ps(-1.0f), _mm_load_ps(x + IX(ROWBEGIN, j))));
-        _mm_store_ps(
-            x + IX(ROWEND, j),
-            _mm_mul_ps(_mm_set1_ps(-1.0f), _mm_load_ps(x + IX(ROWEND - 1, j))));
-      }
-      for (size_t i = ROWBEGIN; i < ROWEND; ++i) {
-        x[IX(i, COLBEGIN - 1)] = x[IX(i, COLBEGIN)];
-        x[IX(i, COLEND)] = x[IX(i, COLEND - 1)];
+      for (size_t i = ROW_BEGIN; i < ROW_END; ++i) {
+        x[IX(i, COL_BEGIN - 1)] = x[IX(i, COL_BEGIN)];
+        x[IX(i, COL_END)] = x[IX(i, COL_END - 1)];
       }
       break;
-    case MAT_V_VEL:
-      for (size_t j = COLBEGIN; j < COLEND; j += 4) {
-        _mm_store_ps(x + IX(ROWBEGIN - 1, j), _mm_load_ps(x + IX(ROWBEGIN, j)));
-        _mm_store_ps(x + IX(ROWEND, j), _mm_load_ps(x + IX(ROWEND - 1, j)));
+    case SLV_MAT_U:
+    case SLV_MAT_U0:
+      for (size_t j = COL_BEGIN; j < COL_END; j += 4) {
+        _mm_store_ps(
+            x + IX(ROW_BEGIN - 1, j),
+            _mm_mul_ps(_mm_set1_ps(-1.0f), _mm_load_ps(x + IX(ROW_BEGIN, j))));
+        _mm_store_ps(x + IX(ROW_END, j),
+                     _mm_mul_ps(_mm_set1_ps(-1.0f),
+                                _mm_load_ps(x + IX(ROW_END - 1, j))));
       }
-      for (size_t i = ROWBEGIN; i < ROWEND; ++i) {
-        x[IX(i, COLBEGIN - 1)] = -x[IX(i, COLBEGIN)];
-        x[IX(i, COLEND)] = -x[IX(i, COLEND - 1)];
+      for (size_t i = ROW_BEGIN; i < ROW_END; ++i) {
+        x[IX(i, COL_BEGIN - 1)] = x[IX(i, COL_BEGIN)];
+        x[IX(i, COL_END)] = x[IX(i, COL_END - 1)];
+      }
+      break;
+    case SLV_MAT_V:
+    case SLV_MAT_V0:
+      for (size_t j = COL_BEGIN; j < COL_END; j += 4) {
+        _mm_store_ps(x + IX(ROW_BEGIN - 1, j),
+                     _mm_load_ps(x + IX(ROW_BEGIN, j)));
+        _mm_store_ps(x + IX(ROW_END, j), _mm_load_ps(x + IX(ROW_END - 1, j)));
+      }
+      for (size_t i = ROW_BEGIN; i < ROW_END; ++i) {
+        x[IX(i, COL_BEGIN - 1)] = -x[IX(i, COL_BEGIN)];
+        x[IX(i, COL_END)] = -x[IX(i, COL_END - 1)];
       }
       break;
     default:
       abort();
   }
-  x[IX(ROWBEGIN - 1, COLBEGIN - 1)] =
-      0.5f * (x[IX(ROWBEGIN, COLBEGIN - 1)] + x[IX(ROWBEGIN - 1, COLBEGIN)]);
-  x[IX(ROWBEGIN - 1, COLEND)] =
-      0.5f * (x[IX(ROWBEGIN, COLEND)] + x[IX(ROWBEGIN - 1, COLEND - 1)]);
-  x[IX(ROWEND, COLBEGIN - 1)] =
-      0.5f * (x[IX(ROWEND - 1, COLBEGIN - 1)] + x[IX(ROWEND, COLBEGIN)]);
-  x[IX(ROWEND, COLEND)] =
-      0.5f * (x[IX(ROWEND - 1, COLEND)] + x[IX(ROWEND, COLEND - 1)]);
+  x[IX(ROW_BEGIN - 1, COL_BEGIN - 1)] =
+      0.5f *
+      (x[IX(ROW_BEGIN, COL_BEGIN - 1)] + x[IX(ROW_BEGIN - 1, COL_BEGIN)]);
+  x[IX(ROW_BEGIN - 1, COL_END)] =
+      0.5f * (x[IX(ROW_BEGIN, COL_END)] + x[IX(ROW_BEGIN - 1, COL_END - 1)]);
+  x[IX(ROW_END, COL_BEGIN - 1)] =
+      0.5f * (x[IX(ROW_END - 1, COL_BEGIN - 1)] + x[IX(ROW_END, COL_BEGIN)]);
+  x[IX(ROW_END, COL_END)] =
+      0.5f * (x[IX(ROW_END - 1, COL_END)] + x[IX(ROW_END, COL_END - 1)]);
 }
 
 // unfortunately, GCC is not smart enough to auto-vectorize this
-void set_bnd_alt(size_t N, MatrixType type, float* x) {
+static void set_bnd_alt(size_t sim_size, size_t row_border, size_t col_border,
+                        MatrixType type, float* x) {
   switch (type) {
-    case MAT_FLUID:
-      for (size_t j = COLBEGIN; j < COLEND; ++j) {
-        x[IX(ROWBEGIN - 1, j)] = x[IX(ROWBEGIN, j)];
-        x[IX(ROWEND, j)] = x[IX(ROWEND - 1, j)];
+    case SLV_MAT_D:
+    case SLV_MAT_D0:
+      for (size_t j = COL_BEGIN; j < COL_END; ++j) {
+        x[IX(ROW_BEGIN - 1, j)] = x[IX(ROW_BEGIN, j)];
+        x[IX(ROW_END, j)] = x[IX(ROW_END - 1, j)];
       }
-      for (size_t i = ROWBEGIN; i < ROWEND; ++i) {
-        x[IX(i, COLBEGIN - 1)] = x[IX(i, COLBEGIN)];
-        x[IX(i, COLEND)] = x[IX(i, COLEND - 1)];
-      }
-      break;
-    case MAT_U_VEL:
-      for (size_t j = COLBEGIN; j < COLEND; ++j) {
-        x[IX(ROWBEGIN - 1, j)] = -x[IX(ROWBEGIN, j)];
-        x[IX(ROWEND, j)] = -x[IX(ROWEND - 1, j)];
-      }
-      for (size_t i = ROWBEGIN; i < ROWEND; ++i) {
-        x[IX(i, COLBEGIN - 1)] = x[IX(i, COLBEGIN)];
-        x[IX(i, COLEND)] = x[IX(i, COLEND - 1)];
+      for (size_t i = ROW_BEGIN; i < ROW_END; ++i) {
+        x[IX(i, COL_BEGIN - 1)] = x[IX(i, COL_BEGIN)];
+        x[IX(i, COL_END)] = x[IX(i, COL_END - 1)];
       }
       break;
-    case MAT_V_VEL:
-      for (size_t j = COLBEGIN; j < COLEND; ++j) {
-        x[IX(ROWBEGIN - 1, j)] = x[IX(ROWBEGIN, j)];
-        x[IX(ROWEND, j)] = x[IX(ROWEND - 1, j)];
+    case SLV_MAT_U:
+    case SLV_MAT_U0:
+      for (size_t j = COL_BEGIN; j < COL_END; ++j) {
+        x[IX(ROW_BEGIN - 1, j)] = -x[IX(ROW_BEGIN, j)];
+        x[IX(ROW_END, j)] = -x[IX(ROW_END - 1, j)];
       }
-      for (size_t i = ROWBEGIN; i < ROWEND; ++i) {
-        x[IX(i, COLBEGIN - 1)] = -x[IX(i, COLBEGIN)];
-        x[IX(i, COLEND)] = -x[IX(i, COLEND - 1)];
+      for (size_t i = ROW_BEGIN; i < ROW_END; ++i) {
+        x[IX(i, COL_BEGIN - 1)] = x[IX(i, COL_BEGIN)];
+        x[IX(i, COL_END)] = x[IX(i, COL_END - 1)];
+      }
+      break;
+    case SLV_MAT_V:
+    case SLV_MAT_V0:
+      for (size_t j = COL_BEGIN; j < COL_END; ++j) {
+        x[IX(ROW_BEGIN - 1, j)] = x[IX(ROW_BEGIN, j)];
+        x[IX(ROW_END, j)] = x[IX(ROW_END - 1, j)];
+      }
+      for (size_t i = ROW_BEGIN; i < ROW_END; ++i) {
+        x[IX(i, COL_BEGIN - 1)] = -x[IX(i, COL_BEGIN)];
+        x[IX(i, COL_END)] = -x[IX(i, COL_END - 1)];
       }
       break;
     default:
       abort();
   }
-  x[IX(ROWBEGIN - 1, COLBEGIN - 1)] =
-      0.5f * (x[IX(ROWBEGIN, COLBEGIN - 1)] + x[IX(ROWBEGIN - 1, COLBEGIN)]);
-  x[IX(ROWBEGIN - 1, COLEND)] =
-      0.5f * (x[IX(ROWBEGIN, COLEND)] + x[IX(ROWBEGIN - 1, COLEND - 1)]);
-  x[IX(ROWEND, COLBEGIN - 1)] =
-      0.5f * (x[IX(ROWEND - 1, COLBEGIN - 1)] + x[IX(ROWEND, COLBEGIN)]);
-  x[IX(ROWEND, COLEND)] =
-      0.5f * (x[IX(ROWEND - 1, COLEND)] + x[IX(ROWEND, COLEND - 1)]);
+  x[IX(ROW_BEGIN - 1, COL_BEGIN - 1)] =
+      0.5f *
+      (x[IX(ROW_BEGIN, COL_BEGIN - 1)] + x[IX(ROW_BEGIN - 1, COL_BEGIN)]);
+  x[IX(ROW_BEGIN - 1, COL_END)] =
+      0.5f * (x[IX(ROW_BEGIN, COL_END)] + x[IX(ROW_BEGIN - 1, COL_END - 1)]);
+  x[IX(ROW_END, COL_BEGIN - 1)] =
+      0.5f * (x[IX(ROW_END - 1, COL_BEGIN - 1)] + x[IX(ROW_END, COL_BEGIN)]);
+  x[IX(ROW_END, COL_END)] =
+      0.5f * (x[IX(ROW_END - 1, COL_END)] + x[IX(ROW_END, COL_END - 1)]);
 }
 
-void set_bnd(size_t N, MatrixType type, float* x) {
-  for (size_t i = 0; i < N; i++) {
-    x[IX(ROWBEGIN - 1, COLBEGIN + i)] = type == MAT_U_VEL
-                                            ? -x[IX(ROWBEGIN, COLBEGIN + i)]
-                                            : x[IX(ROWBEGIN, COLBEGIN + i)];
-    x[IX(ROWEND, COLBEGIN + i)] = type == MAT_U_VEL
-                                      ? -x[IX(ROWEND - 1, COLBEGIN + i)]
-                                      : x[IX(ROWEND - 1, COLBEGIN + i)];
-    x[IX(ROWBEGIN + i, COLBEGIN - 1)] = type == MAT_V_VEL
-                                            ? -x[IX(ROWBEGIN + i, COLBEGIN)]
-                                            : x[IX(ROWBEGIN + i, COLBEGIN)];
-    x[IX(ROWBEGIN + i, COLEND)] = type == MAT_V_VEL
-                                      ? -x[IX(ROWBEGIN + i, COLEND - 1)]
-                                      : x[IX(ROWBEGIN + i, COLEND - 1)];
+static void set_bnd(size_t sim_size, size_t row_border, size_t col_border,
+                    MatrixType type, float* x) {
+  for (size_t i = 0; i < sim_size; i++) {
+    x[IX(ROW_BEGIN - 1, COL_BEGIN + i)] =
+        (type == SLV_MAT_U || type == SLV_MAT_U0)
+            ? -x[IX(ROW_BEGIN, COL_BEGIN + i)]
+            : x[IX(ROW_BEGIN, COL_BEGIN + i)];
+    x[IX(ROW_END, COL_BEGIN + i)] = (type == SLV_MAT_U || type == SLV_MAT_U0)
+                                        ? -x[IX(ROW_END - 1, COL_BEGIN + i)]
+                                        : x[IX(ROW_END - 1, COL_BEGIN + i)];
+    x[IX(ROW_BEGIN + i, COL_BEGIN - 1)] =
+        (type == SLV_MAT_V || type == SLV_MAT_V0)
+            ? -x[IX(ROW_BEGIN + i, COL_BEGIN)]
+            : x[IX(ROW_BEGIN + i, COL_BEGIN)];
+    x[IX(ROW_BEGIN + i, COL_END)] = (type == SLV_MAT_V || type == SLV_MAT_V0)
+                                        ? -x[IX(ROW_BEGIN + i, COL_END - 1)]
+                                        : x[IX(ROW_BEGIN + i, COL_END - 1)];
   }
-  x[IX(ROWBEGIN - 1, COLBEGIN - 1)] =
-      0.5f * (x[IX(ROWBEGIN, COLBEGIN - 1)] + x[IX(ROWBEGIN - 1, COLBEGIN)]);
-  x[IX(ROWBEGIN - 1, COLEND)] =
-      0.5f * (x[IX(ROWBEGIN, COLEND)] + x[IX(ROWBEGIN - 1, COLEND - 1)]);
-  x[IX(ROWEND, COLBEGIN - 1)] =
-      0.5f * (x[IX(ROWEND - 1, COLBEGIN - 1)] + x[IX(ROWEND, COLBEGIN)]);
-  x[IX(ROWEND, COLEND)] =
-      0.5f * (x[IX(ROWEND - 1, COLEND)] + x[IX(ROWEND, COLEND - 1)]);
+  x[IX(ROW_BEGIN - 1, COL_BEGIN - 1)] =
+      0.5f *
+      (x[IX(ROW_BEGIN, COL_BEGIN - 1)] + x[IX(ROW_BEGIN - 1, COL_BEGIN)]);
+  x[IX(ROW_BEGIN - 1, COL_END)] =
+      0.5f * (x[IX(ROW_BEGIN, COL_END)] + x[IX(ROW_BEGIN - 1, COL_END - 1)]);
+  x[IX(ROW_END, COL_BEGIN - 1)] =
+      0.5f * (x[IX(ROW_END - 1, COL_BEGIN - 1)] + x[IX(ROW_END, COL_BEGIN)]);
+  x[IX(ROW_END, COL_END)] =
+      0.5f * (x[IX(ROW_END - 1, COL_END)] + x[IX(ROW_END, COL_END - 1)]);
 }
 
-void sse2_solve(size_t N, MatrixType type, float* x, float* x0, float a,
-                float c) {
-  size_t size = ACTUALSIZE;
+void sse2_solve(size_t sim_size, size_t row_border, size_t col_border,
+                MatrixType type, float* x, float* x0, float a, float c) {
+  size_t size = ACTUAL_SIZE;
   if (size % 16 != 0) size += 16 - size % 16;
   float* x1 = aligned_alloc(64, size * sizeof(float));
   __m128 c_inv_vec = _mm_set1_ps(1.0f / c), a_vec = _mm_set1_ps(a);
 
   for (size_t k = 0; k < 20; k++) {
-    for (size_t i = ROWBEGIN; i < ROWEND; ++i) {
-      for (size_t j = COLBEGIN; j < COLEND; j += 4) {
+    for (size_t i = ROW_BEGIN; i < ROW_END; ++i) {
+      for (size_t j = COL_BEGIN; j < COL_END; j += 4) {
         __m128 above = _mm_load_ps(x + IX(i + 1, j));
         __m128 below = _mm_load_ps(x + IX(i - 1, j));
 
@@ -233,52 +266,53 @@ void sse2_solve(size_t N, MatrixType type, float* x, float* x0, float a,
         _mm_store_ps(x1 + IX(i, j), dest);
       }
     }
-    SET_BND(N, type, x1);
+    SET_BND(sim_size, row_border, col_border, type, x1);
     SWAP(x, x1);
   }
   free(x1);
 }
 
-void jac_solve(size_t N, MatrixType type, float* x, float* x0, float a,
-               float c) {
-  size_t size = ACTUALSIZE;
+static void jac_solve(size_t sim_size, size_t row_border, size_t col_border,
+                      MatrixType type, float* x, float* x0, float a, float c) {
+  size_t size = ACTUAL_SIZE;
   if (size % 16 != 0) size += 16 - size % 16;
   float* x1 = aligned_alloc(64, size * sizeof(float));
 
   for (size_t k = 0; k < 20; k++) {
-    for (size_t i = ROWBEGIN; i < ROWEND; i++) {
-      for (size_t j = COLBEGIN; j < COLEND; j++) {
+    for (size_t i = ROW_BEGIN; i < ROW_END; i++) {
+      for (size_t j = COL_BEGIN; j < COL_END; j++) {
         x1[IX(i, j)] =
             (x0[IX(i, j)] + a * (x[IX(i - 1, j)] + x[IX(i + 1, j)] +
                                  x[IX(i, j - 1)] + x[IX(i, j + 1)])) /
             c;
       }
     }
-    SET_BND(N, type, x1);
+    SET_BND(sim_size, row_border, col_border, type, x1);
     SWAP(x, x1);
   }
 
   free(x1);
 }
 
-void lin_solve(size_t N, MatrixType type, float* x, float* x0, float a,
-               float c) {
+static void lin_solve(size_t sim_size, size_t row_border, size_t col_border,
+                      MatrixType type, float* x, float* x0, float a, float c) {
   for (size_t k = 0; k < 20; k++) {
-    for (size_t i = ROWBEGIN; i < ROWEND; i++) {
-      for (size_t j = COLBEGIN; j < COLEND; j++) {
+    for (size_t i = ROW_BEGIN; i < ROW_END; i++) {
+      for (size_t j = COL_BEGIN; j < COL_END; j++) {
         x[IX(i, j)] = (x0[IX(i, j)] + a * (x[IX(i - 1, j)] + x[IX(i + 1, j)] +
                                            x[IX(i, j - 1)] + x[IX(i, j + 1)])) /
                       c;
       }
     }
-    SET_BND(N, type, x);
+    SET_BND(sim_size, row_border, col_border, type, x);
   }
 }
 
-void diffuse(size_t N, MatrixType type, float* x, float* x0, float diff,
-             float dt) {
-  float a = dt * diff * N * N;
-  SOLVE(N, type, x, x0, a, 1 + 4 * a);
+static void diffuse(size_t sim_size, size_t row_border, size_t col_border,
+                    MatrixType type, float* x, float* x0, float diff,
+                    float dt) {
+  float a = dt * diff * sim_size * sim_size;
+  SOLVE(sim_size, row_border, col_border, type, x, x0, a, 1 + 4 * a);
 }
 
 // SSE2 is not powerful enough to meaningfully vectorize this function; the
@@ -286,24 +320,25 @@ void diffuse(size_t N, MatrixType type, float* x, float* x0, float diff,
 // (ish). SSE4.1 might be enough but really what I'm targeting is GCC's
 // x86-64-v3 feature level, which lumps together a bunch of extensions, the
 // most recent of which is SSE4.2.
-void sse4_2_advect(size_t N, MatrixType type, float* d, float* d0, float* u,
-                   float* v, float dt) {
-  alignas(16) static const float j_init[4] = {COLBEGIN, COLBEGIN + 1.0f,
-                                              COLBEGIN + 2.0f, COLBEGIN + 3.0f},
-                                 x_min[4] = {ROWBEGIN - 0.5f, ROWBEGIN - 0.5f,
-                                             ROWBEGIN - 0.5f, ROWBEGIN - 0.5f},
-                                 y_min[4] = {COLBEGIN - 0.5f, COLBEGIN - 0.5f,
-                                             COLBEGIN - 0.5f, COLBEGIN - 0.5f};
-  __m128 dt0_vec = _mm_set1_ps(dt * N);
+static void sse4_2_advect(size_t sim_size, size_t row_border, size_t col_border,
+                          MatrixType type, float* d, float* d0, float* u,
+                          float* v, float dt) {
+  alignas(16) const float j_init[4] = {COL_BEGIN, COL_BEGIN + 1.0f,
+                                       COL_BEGIN + 2.0f, COL_BEGIN + 3.0f},
+                          x_min[4] = {ROW_BEGIN - 0.5f, ROW_BEGIN - 0.5f,
+                                      ROW_BEGIN - 0.5f, ROW_BEGIN - 0.5f},
+                          y_min[4] = {COL_BEGIN - 0.5f, COL_BEGIN - 0.5f,
+                                      COL_BEGIN - 0.5f, COL_BEGIN - 0.5f};
+  __m128 dt0_vec = _mm_set1_ps(dt * sim_size);
   // NOTE: if the way ROW/COL/END/BEGIN is calculated changes, this will break
   __m128 x_min_vec = _mm_load_ps(x_min);
-  __m128 x_max_vec = _mm_add_ps(x_min_vec, _mm_set1_ps(N));
+  __m128 x_max_vec = _mm_add_ps(x_min_vec, _mm_set1_ps(sim_size));
   __m128 y_min_vec = _mm_load_ps(y_min);
-  __m128 y_max_vec = _mm_add_ps(y_min_vec, _mm_set1_ps(N));
-  for (size_t i = ROWBEGIN; i < ROWEND; i++) {
+  __m128 y_max_vec = _mm_add_ps(y_min_vec, _mm_set1_ps(sim_size));
+  for (size_t i = ROW_BEGIN; i < ROW_END; i++) {
     __m128 i_vec = _mm_set1_ps(i);
     __m128 j_vec = _mm_load_ps(j_init);
-    for (size_t j = COLBEGIN; j < COLEND;
+    for (size_t j = COL_BEGIN; j < COL_END;
          j += 4, j_vec = _mm_add_ps(j_vec, _mm_set1_ps(4.0f))) {
       __m128 u_vec = _mm_load_ps(u + IX(i, j));
       __m128 x_vec = _mm_sub_ps(i_vec, _mm_mul_ps(dt0_vec, u_vec));
@@ -349,7 +384,7 @@ void sse4_2_advect(size_t N, MatrixType type, float* d, float* d0, float* u,
                                             _mm_mul_ps(t1_vec, d0_i1_j1)))));
     }
   }
-  SET_BND(N, type, d);
+  SET_BND(sim_size, row_border, col_border, type, d);
 }
 
 // the compiler is smart enough to turn the if statements into calls to minss
@@ -360,19 +395,20 @@ void sse4_2_advect(size_t N, MatrixType type, float* d, float* d0, float* u,
 // be converting to 64-bit integers, which are too big to fit 4 of them into a
 // single xmm register. there also isn't a way to convert packed floats to
 // packed 64-bit integers until AVX512.
-void advect(size_t N, MatrixType type, float* d, float* d0, float* u, float* v,
-            float dt) {
-  float dt0 = dt * N;
-  for (size_t i = ROWBEGIN; i < ROWEND; i++) {
-    for (size_t j = COLBEGIN; j < COLEND; j++) {
+static void advect(size_t sim_size, size_t row_border, size_t col_border,
+                   MatrixType type, float* d, float* d0, float* u, float* v,
+                   float dt) {
+  float dt0 = dt * sim_size;
+  for (size_t i = ROW_BEGIN; i < ROW_END; i++) {
+    for (size_t j = COL_BEGIN; j < COL_END; j++) {
       float x = i - dt0 * u[IX(i, j)];
       float y = j - dt0 * v[IX(i, j)];
-      if (x < ROWBEGIN - 0.5f) x = ROWBEGIN - 0.5f;
-      if (x > ROWEND - 0.5f) x = ROWEND - 0.5f;
+      if (x < ROW_BEGIN - 0.5f) x = ROW_BEGIN - 0.5f;
+      if (x > ROW_END - 0.5f) x = ROW_END - 0.5f;
       size_t i0 = x;
       size_t i1 = i0 + 1;
-      if (y < COLBEGIN - 0.5f) y = COLBEGIN - 0.5f;
-      if (y > COLEND - 0.5f) y = COLEND - 0.5f;
+      if (y < COL_BEGIN - 0.5f) y = COL_BEGIN - 0.5f;
+      if (y > COL_END - 0.5f) y = COL_END - 0.5f;
       size_t j0 = y;
       size_t j1 = j0 + 1;
       float s1 = x - i0;
@@ -383,14 +419,15 @@ void advect(size_t N, MatrixType type, float* d, float* d0, float* u, float* v,
                     s1 * (t0 * d0[IX(i1, j0)] + t1 * d0[IX(i1, j1)]);
     }
   }
-  SET_BND(N, type, d);
+  SET_BND(sim_size, row_border, col_border, type, d);
 }
 
-void sse2_project(size_t N, float* u, float* v, float* p, float* div) {
-  __m128 multiplier = _mm_set1_ps(-0.5f / N);
-  memset(p, 0, ACTUALSIZE * sizeof(float));
-  for (size_t i = ROWBEGIN; i < ROWEND; i++) {
-    for (size_t j = COLBEGIN; j < COLEND; j += 4) {
+static void sse2_project(size_t sim_size, size_t row_border, size_t col_border,
+                         float* u, float* v, float* p, float* div) {
+  __m128 multiplier = _mm_set1_ps(-0.5f / sim_size);
+  memset(p, 0, ACTUAL_SIZE * sizeof(float));
+  for (size_t i = ROW_BEGIN; i < ROW_END; i++) {
+    for (size_t j = COL_BEGIN; j < COL_END; j += 4) {
       __m128 u_above = _mm_load_ps(u + IX(i + 1, j));
       __m128 u_below = _mm_load_ps(u + IX(i - 1, j));
       __m128 u_div = _mm_sub_ps(u_above, u_below);
@@ -410,13 +447,13 @@ void sse2_project(size_t N, float* u, float* v, float* p, float* div) {
       _mm_store_ps(div + IX(i, j), result);
     }
   }
-  SET_BND(N, MAT_FLUID, div);
+  SET_BND(sim_size, row_border, col_border, SLV_MAT_D, div);
 
-  SOLVE(N, MAT_FLUID, p, div, 1, 4);
+  SOLVE(sim_size, row_border, col_border, SLV_MAT_D, p, div, 1, 4);
 
-  multiplier = _mm_set1_ps(0.5f * N);
-  for (size_t i = ROWBEGIN; i < ROWEND; i++) {
-    for (size_t j = COLBEGIN; j < COLEND; j += 4) {
+  multiplier = _mm_set1_ps(0.5f * sim_size);
+  for (size_t i = ROW_BEGIN; i < ROW_END; i++) {
+    for (size_t j = COL_BEGIN; j < COL_END; j += 4) {
       __m128 p_above = _mm_load_ps(p + IX(i + 1, j));
       __m128 p_below = _mm_load_ps(p + IX(i - 1, j));
       __m128 p_vert_diff = _mm_sub_ps(p_above, p_below);
@@ -444,56 +481,152 @@ void sse2_project(size_t N, float* u, float* v, float* p, float* div) {
       _mm_store_ps(v + IX(i, j), v_current);
     }
   }
-  SET_BND(N, MAT_U_VEL, u);
-  SET_BND(N, MAT_V_VEL, v);
+  SET_BND(sim_size, row_border, col_border, SLV_MAT_U, u);
+  SET_BND(sim_size, row_border, col_border, SLV_MAT_V, v);
 }
 
-void project(size_t N, float* u, float* v, float* p, float* div) {
-  for (size_t i = ROWBEGIN; i < ROWEND; i++) {
-    for (size_t j = COLBEGIN; j < COLEND; j++) {
+static void project(size_t sim_size, size_t row_border, size_t col_border,
+                    float* u, float* v, float* p, float* div) {
+  for (size_t i = ROW_BEGIN; i < ROW_END; i++) {
+    for (size_t j = COL_BEGIN; j < COL_END; j++) {
       div[IX(i, j)] = -0.5f *
                       (u[IX(i + 1, j)] - u[IX(i - 1, j)] + v[IX(i, j + 1)] -
                        v[IX(i, j - 1)]) /
-                      N;
+                      sim_size;
       p[IX(i, j)] = 0;
     }
   }
-  SET_BND(N, MAT_FLUID, div);
-  SET_BND(N, MAT_FLUID, p);
+  SET_BND(sim_size, row_border, col_border, SLV_MAT_D, div);
+  SET_BND(sim_size, row_border, col_border, SLV_MAT_D, p);
 
-  SOLVE(N, MAT_FLUID, p, div, 1, 4);
+  SOLVE(sim_size, row_border, col_border, SLV_MAT_D, p, div, 1, 4);
 
-  for (size_t i = ROWBEGIN; i < ROWEND; i++) {
-    for (size_t j = COLBEGIN; j < COLEND; j++) {
-      u[IX(i, j)] -= 0.5f * N * (p[IX(i + 1, j)] - p[IX(i - 1, j)]);
-      v[IX(i, j)] -= 0.5f * N * (p[IX(i, j + 1)] - p[IX(i, j - 1)]);
+  for (size_t i = ROW_BEGIN; i < ROW_END; i++) {
+    for (size_t j = COL_BEGIN; j < COL_END; j++) {
+      u[IX(i, j)] -= 0.5f * sim_size * (p[IX(i + 1, j)] - p[IX(i - 1, j)]);
+      v[IX(i, j)] -= 0.5f * sim_size * (p[IX(i, j + 1)] - p[IX(i, j - 1)]);
     }
   }
-  SET_BND(N, MAT_U_VEL, u);
-  SET_BND(N, MAT_V_VEL, v);
+  SET_BND(sim_size, row_border, col_border, SLV_MAT_U, u);
+  SET_BND(sim_size, row_border, col_border, SLV_MAT_V, v);
 }
 
-void dens_step(size_t N, float* x, float* x0, float* u, float* v, float diff,
-               float dt) {
-  ADD_SOURCE(N, x, x0, dt);
-  SWAP(x0, x);
-  diffuse(N, MAT_FLUID, x, x0, diff, dt);
-  SWAP(x0, x);
-  ADVECT(N, MAT_FLUID, x, x0, u, v, dt);
+void solver_dens_step(Solver* solver) {
+  ADD_SOURCE(solver->sim_size, solver->row_border, solver->col_border,
+             solver->d, solver->d_prev, solver->dt, solver->source);
+  SWAP(solver->d_prev, solver->d);
+  diffuse(solver->sim_size, solver->row_border, solver->col_border, SLV_MAT_D,
+          solver->d, solver->d_prev, solver->diff, solver->dt);
+  SWAP(solver->d_prev, solver->d);
+  ADVECT(solver->sim_size, solver->row_border, solver->col_border, SLV_MAT_D,
+         solver->d, solver->d_prev, solver->u, solver->v, solver->dt);
 }
 
-void vel_step(size_t N, float* u, float* v, float* u0, float* v0, float visc,
-              float dt) {
-  ADD_SOURCE(N, u, u0, dt);
-  ADD_SOURCE(N, v, v0, dt);
-  SWAP(u0, u);
-  diffuse(N, MAT_U_VEL, u, u0, visc, dt);
-  SWAP(v0, v);
-  diffuse(N, MAT_V_VEL, v, v0, visc, dt);
-  PROJECT(N, u, v, u0, v0);
-  SWAP(u0, u);
-  SWAP(v0, v);
-  ADVECT(N, MAT_U_VEL, u, u0, u0, v0, dt);
-  ADVECT(N, MAT_V_VEL, v, v0, u0, v0, dt);
-  PROJECT(N, u, v, u0, v0);
+void solver_vel_step(Solver* solver) {
+  ADD_SOURCE(solver->sim_size, solver->row_border, solver->col_border,
+             solver->u, solver->u_prev, solver->dt, solver->force);
+  ADD_SOURCE(solver->sim_size, solver->row_border, solver->col_border,
+             solver->v, solver->v_prev, solver->dt, solver->force);
+  SWAP(solver->u_prev, solver->u);
+  diffuse(solver->sim_size, solver->row_border, solver->col_border, SLV_MAT_U,
+          solver->u, solver->u_prev, solver->visc, solver->dt);
+  SWAP(solver->v_prev, solver->v);
+  diffuse(solver->sim_size, solver->row_border, solver->col_border, SLV_MAT_V,
+          solver->v, solver->v_prev, solver->visc, solver->dt);
+  PROJECT(solver->sim_size, solver->row_border, solver->col_border, solver->u,
+          solver->v, solver->u_prev, solver->v_prev);
+  SWAP(solver->u_prev, solver->u);
+  SWAP(solver->v_prev, solver->v);
+  ADVECT(solver->sim_size, solver->row_border, solver->col_border, SLV_MAT_U,
+         solver->u, solver->u_prev, solver->u_prev, solver->v_prev, solver->dt);
+  ADVECT(solver->sim_size, solver->row_border, solver->col_border, SLV_MAT_V,
+         solver->v, solver->v_prev, solver->u_prev, solver->v_prev, solver->dt);
+  PROJECT(solver->sim_size, solver->row_border, solver->col_border, solver->u,
+          solver->v, solver->u_prev, solver->v_prev);
+}
+
+float* solver_at(Solver* solver, size_t x, size_t y, MatrixType type) {
+  const size_t sim_size = solver->sim_size, row_border = solver->row_border,
+               col_border = solver->col_border,
+               offset = IX(x + ROW_BEGIN, y + COL_BEGIN);
+  switch (type) {
+    case SLV_MAT_D:
+      return solver->d + offset;
+    case SLV_MAT_D0:
+      return solver->d_prev + offset;
+    case SLV_MAT_U:
+      return solver->u + offset;
+    case SLV_MAT_U0:
+      return solver->u_prev + offset;
+    case SLV_MAT_V:
+      return solver->v + offset;
+    case SLV_MAT_V0:
+      return solver->v_prev + offset;
+    default:
+      abort();
+  }
+}
+
+void solver_clear(Solver* solver, MatrixType type) {
+  const size_t sim_size = solver->sim_size, row_border = solver->row_border,
+               col_border = solver->col_border;
+  switch (type) {
+    case SLV_MAT_ALL:
+      for (size_t i = 0, size = ACTUAL_SIZE; i < size; i++)
+        solver->u[i] = solver->v[i] = solver->d[i] = solver->u_prev[i] =
+            solver->v_prev[i] = solver->d_prev[i] = 0.0f;
+      break;
+    case SLV_MAT_CURR:
+      for (size_t i = 0, size = ACTUAL_SIZE; i < size; i++)
+        solver->u[i] = solver->v[i] = solver->d[i] = 0.0f;
+      break;
+    case SLV_MAT_PREV:
+      for (size_t i = 0, size = ACTUAL_SIZE; i < size; i++)
+        solver->u_prev[i] = solver->v_prev[i] = solver->d_prev[i] = 0.0f;
+      break;
+    default:
+      abort();
+  }
+}
+
+Solver* solver_init(size_t sim_size, float dt, float diff, float visc,
+                    float force, float source) {
+  const size_t row_border = 1, col_border = 4;
+  size_t size = ACTUAL_SIZE;
+
+  Solver* solver = malloc(sizeof(Solver));
+  if (!solver) return NULL;
+
+  solver->sim_size = sim_size;
+  solver->row_border = row_border;
+  solver->col_border = col_border;
+  solver->dt = dt;
+  solver->diff = diff;
+  solver->visc = visc;
+  solver->force = force;
+  solver->source = source;
+  solver->u = aligned_alloc(64, size * sizeof(float));
+  solver->v = aligned_alloc(64, size * sizeof(float));
+  solver->u_prev = aligned_alloc(64, size * sizeof(float));
+  solver->v_prev = aligned_alloc(64, size * sizeof(float));
+  solver->d = aligned_alloc(64, size * sizeof(float));
+  solver->d_prev = aligned_alloc(64, size * sizeof(float));
+
+  if (!solver->u || !solver->v || !solver->u_prev || !solver->v_prev ||
+      !solver->d || !solver->d_prev) {
+    solver_destroy(solver);
+    return NULL;
+  }
+
+  return solver;
+}
+
+void solver_destroy(Solver* solver) {
+  free(solver->d);
+  free(solver->d_prev);
+  free(solver->u);
+  free(solver->u_prev);
+  free(solver->v);
+  free(solver->v_prev);
+  free(solver);
 }
