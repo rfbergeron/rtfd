@@ -407,7 +407,7 @@ void renderer_update(Renderer *renderer, Solver *solver) {
   for (size_t i = 0; i <= renderer->sim_size; ++i) {
     for (size_t j = 0; j <= renderer->sim_size; ++j) {
       renderer->dens_vertices[DENS_IX(i, j) + 2] =
-          *solver_at(solver, i, j, SLV_MAT_D);
+          *solver_ix(solver, i, j, SLV_MAT_D);
     }
   }
 
@@ -415,10 +415,10 @@ void renderer_update(Renderer *renderer, Solver *solver) {
     for (size_t j = 0; j < renderer->sim_size; ++j) {
       renderer->vel_vertices[VEL_IX(i, j) + 2] =
           renderer->vel_vertices[VEL_IX(i, j)] +
-          *solver_at(solver, i, j, SLV_MAT_U);
+          *solver_ix(solver, i, j, SLV_MAT_U);
       renderer->vel_vertices[VEL_IX(i, j) + 3] =
           renderer->vel_vertices[VEL_IX(i, j) + 1] +
-          *solver_at(solver, i, j, SLV_MAT_V);
+          *solver_ix(solver, i, j, SLV_MAT_V);
     }
   }
 
@@ -467,14 +467,14 @@ void renderer_get_input(Renderer *renderer, Solver *solver) {
   size_t y = (height - renderer->ypos) / height * renderer->sim_size;
 
   if (renderer->add_dens) {
-    *solver_at(solver, x, y, SLV_MAT_D0) = 1.0f;
+    *solver_ix(solver, x, y, SLV_MAT_D0) = 1.0f;
   }
 
   if (renderer->add_vel) {
     float u_force = (renderer->xpos - renderer->old_xpos);
     float v_force = (renderer->old_ypos - renderer->ypos);
-    *solver_at(solver, x, y, SLV_MAT_U0) = u_force;
-    *solver_at(solver, x, y, SLV_MAT_V0) = v_force;
+    *solver_ix(solver, x, y, SLV_MAT_U0) = u_force;
+    *solver_ix(solver, x, y, SLV_MAT_V0) = v_force;
   }
 }
 

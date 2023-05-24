@@ -1,5 +1,6 @@
-#ifndef SOLVER_H
-#define SOLVER_H
+
+#ifndef COMMON_SOLVER_H
+#define COMMON_SOLVER_H
 #include <stddef.h>
 
 typedef enum matrix_type {
@@ -15,18 +16,19 @@ typedef enum matrix_type {
 } MatrixType;
 
 typedef struct solver {
-  size_t sim_size, row_border, col_border;
+  size_t sim_size;
   float *u, *v, *u_prev, *v_prev;
   float *d, *d_prev;
+  void (*vel_fn)(struct solver *), (*dens_fn)(struct solver *),
+      (*clear_fn)(struct solver *, MatrixType);
+  float *(*ix_fn)(struct solver *, size_t, size_t, MatrixType);
   float dt, diff, visc;
   float force, source;
 } Solver;
 
-Solver *solver_init(size_t sim_size, float dt, float diff, float visc,
-                    float force, float source);
 void solver_destroy(Solver *solver);
 void solver_dens_step(Solver *solver);
 void solver_vel_step(Solver *solver);
-float *solver_at(Solver *solver, size_t x, size_t y, MatrixType type);
+float *solver_ix(Solver *solver, size_t x, size_t y, MatrixType type);
 void solver_clear(Solver *solver, MatrixType type);
 #endif

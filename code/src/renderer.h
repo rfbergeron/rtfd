@@ -3,8 +3,8 @@
 #include <GLFW/glfw3.h>
 #include <stdbool.h>
 
+#include "common_solver.h"
 #include "glad/gl.h"
-#include "solver.h"
 
 typedef struct renderer {
   GLFWwindow *window;

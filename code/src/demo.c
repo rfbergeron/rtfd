@@ -3,7 +3,8 @@
 #include <stdlib.h>
 
 #include "renderer.h"
-#include "solver.h"
+#include "scalar_solver.h"
+#include "sse4_2_solver.h"
 
 static size_t sim_size = 512;
 static float dt = 0.1f, diff = 0.0f, visc = 0.0f;
@@ -48,7 +49,9 @@ int main(int argc, char **argv) {
   printf("\t Clear the simulation by pressing the 'c' key\n");
   printf("\t Quit by pressing the 'q' key\n");
 
-  Solver *solver = solver_init(sim_size, dt, diff, visc, force, source);
+  Solver *solver = sse4_2_solver_init(sim_size, dt, diff, visc, force, source);
+  // Solver *solver = scalar_solver_init(sim_size, dt, diff, visc, force,
+  // source);
   if (!solver) exit(EXIT_FAILURE);
   solver_clear(solver, SLV_MAT_ALL);
 
