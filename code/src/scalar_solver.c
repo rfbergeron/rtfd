@@ -205,7 +205,7 @@ static void project(size_t sim_size, float* u, float* v, float* p, float* div,
   set_bnd(sim_size, SLV_MAT_V, v);
 }
 
-static void dens_step(Solver* solver) {
+void scalar_solver_dens_step(Solver* solver) {
   add_source(solver->sim_size, solver->d, solver->d_prev, solver->dt,
              solver->source);
   SWAP(solver->d_prev, solver->d);
@@ -216,7 +216,7 @@ static void dens_step(Solver* solver) {
          solver->v, solver->dt);
 }
 
-static void vel_step(Solver* solver) {
+void scalar_solver_vel_step(Solver* solver) {
   add_source(solver->sim_size, solver->u, solver->u_prev, solver->dt,
              solver->force);
   add_source(solver->sim_size, solver->v, solver->v_prev, solver->dt,
@@ -239,7 +239,7 @@ static void vel_step(Solver* solver) {
           solver->v_prev, solver->d_prev);
 }
 
-static float* ix(Solver* solver, size_t x, size_t y, MatrixType type) {
+float* scalar_solver_ix(Solver* solver, size_t x, size_t y, MatrixType type) {
   const size_t sim_size = solver->sim_size,
                offset = IX(x + ROW_BEGIN, y + COL_BEGIN);
   switch (type) {
@@ -260,7 +260,7 @@ static float* ix(Solver* solver, size_t x, size_t y, MatrixType type) {
   }
 }
 
-static void clear(Solver* solver, MatrixType type) {
+void scalar_solver_clear(Solver* solver, MatrixType type) {
   const size_t sim_size = solver->sim_size;
   for (size_t i = 0, size = ACTUAL_SIZE; i < size; i++) {
     if (type & SLV_MAT_D) solver->d[i] = 0.0f;
@@ -279,16 +279,13 @@ Solver* scalar_solver_init(size_t sim_size, float dt, float diff, float visc,
   Solver* solver = malloc(sizeof(Solver));
   if (!solver) return NULL;
 
+  solver->type = SLV_SCALAR;
   solver->sim_size = sim_size;
   solver->dt = dt;
   solver->diff = diff;
   solver->visc = visc;
   solver->force = force;
   solver->source = source;
-  solver->vel_fn = vel_step;
-  solver->dens_fn = dens_step;
-  solver->clear_fn = clear;
-  solver->ix_fn = ix;
   solver->u = malloc(size * sizeof(float));
   solver->v = malloc(size * sizeof(float));
   solver->u_prev = malloc(size * sizeof(float));
@@ -303,4 +300,14 @@ Solver* scalar_solver_init(size_t sim_size, float dt, float diff, float visc,
   }
 
   return solver;
+}
+
+void scalar_solver_destroy(Solver* solver) {
+  free(solver->d);
+  free(solver->d_prev);
+  free(solver->u);
+  free(solver->u_prev);
+  free(solver->v);
+  free(solver->v_prev);
+  free(solver);
 }
