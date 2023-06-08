@@ -19,7 +19,8 @@ typedef enum matrix_type {
 
 extern const size_t MAT_TYPE_IXS[];
 
-typedef enum solver_type { SLV_SCALAR, SLV_SSE4_2 } SolverType;
+typedef enum solver_type { SLV_SCALAR, SLV_SSE4_2, SLV_CL } SolverType;
+typedef struct _cl_bundle *cl_bundle;
 
 typedef struct solver {
   size_t sim_size;
@@ -30,6 +31,7 @@ typedef struct solver {
     };
     struct {
       float *h_buffers[6];
+      cl_bundle bundle;
     };
   };
   SolverType type;

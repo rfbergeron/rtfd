@@ -2,6 +2,7 @@
 
 #include <stdlib.h>
 
+#include "cl_solver.h"
 #include "scalar_solver.h"
 #include "sse4_2_solver.h"
 
@@ -15,6 +16,8 @@ void solver_dens_step(Solver* solver) {
       return scalar_solver_dens_step(solver);
     case SLV_SSE4_2:
       return sse4_2_solver_dens_step(solver);
+    case SLV_CL:
+      return cl_solver_dens_step(solver);
     default:
       abort();
   }
@@ -26,6 +29,8 @@ void solver_vel_step(Solver* solver) {
       return scalar_solver_vel_step(solver);
     case SLV_SSE4_2:
       return sse4_2_solver_vel_step(solver);
+    case SLV_CL:
+      return cl_solver_vel_step(solver);
     default:
       abort();
   }
@@ -37,6 +42,8 @@ float* solver_ix(Solver* solver, size_t x, size_t y, MatrixType type) {
       return scalar_solver_ix(solver, x, y, type);
     case SLV_SSE4_2:
       return sse4_2_solver_ix(solver, x, y, type);
+    case SLV_CL:
+      return cl_solver_ix(solver, x, y, type);
     default:
       abort();
   }
@@ -48,6 +55,8 @@ void solver_clear(Solver* solver, MatrixType type) {
       return scalar_solver_clear(solver, type);
     case SLV_SSE4_2:
       return sse4_2_solver_clear(solver, type);
+    case SLV_CL:
+      return cl_solver_clear(solver, type);
     default:
       abort();
   }
@@ -60,6 +69,8 @@ Solver* solver_init(size_t sim_size, SolverType type, float dt, float diff,
       return scalar_solver_init(sim_size, dt, diff, visc, force, source);
     case SLV_SSE4_2:
       return sse4_2_solver_init(sim_size, dt, diff, visc, force, source);
+    case SLV_CL:
+      return cl_solver_init(sim_size, dt, diff, visc, force, source);
     default:
       abort();
   }
@@ -71,6 +82,8 @@ void solver_destroy(Solver* solver) {
       return scalar_solver_destroy(solver);
     case SLV_SSE4_2:
       return sse4_2_solver_destroy(solver);
+    case SLV_CL:
+      return cl_solver_destroy(solver);
     default:
       abort();
   }
