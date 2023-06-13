@@ -13,9 +13,12 @@
 #include "cl_common.h"
 
 static const char *OPTS_FMT = "-I%s/src -cl-std=CL2.0";
-static const char *KERNEL_NAMES[] = {"jacobi", "set_bnd"};
+static const char *KERNEL_NAMES[] = {"jacobi", "set_bnd", "project_one",
+                                     "project_two"};
 #define JACOBI_IX 0
 #define SET_BND_IX 1
+#define PROJECT_ONE_IX 2
+#define PROJECT_TWO_IX 3
 #define L_SIZE 16
 #define L_ACTUAL_SIZE \
   ((P_SIZE * L_SIZE + 2 * COL_BORDER) * (L_SIZE + 2 * ROW_BORDER))
@@ -178,8 +181,8 @@ static cl_int init_kernel(cl_bundle bundle, size_t kern_ix,
   FILE *fp = fopen(FILENAME, "r");
   if (!fp) FAIL(strerror(errno), fail_open);
 
-  char buffer[8192];
-  size_t len = fread(buffer, sizeof(char), 8192, fp);
+  char buffer[32768];
+  size_t len = fread(buffer, sizeof(char), 32768, fp);
   if (ferror(fp))
     FAIL((status = -1, strerror(errno)), fail_read);
   else if (!feof(fp))
@@ -309,6 +312,10 @@ cl_bundle init_gpu_bundle(size_t sim_size, cl_int *status,
   *status = init_kernel(ret, JACOBI_IX, errmsg_out);
   if (*status != CL_SUCCESS) FAIL(*errmsg_out, fail_jacobi);
   *status = init_kernel(ret, SET_BND_IX, errmsg_out);
+  if (*status != CL_SUCCESS) FAIL(*errmsg_out, fail_set_bnd);
+  *status = init_kernel(ret, PROJECT_ONE_IX, errmsg_out);
+  if (*status != CL_SUCCESS) FAIL(*errmsg_out, fail_set_bnd);
+  *status = init_kernel(ret, PROJECT_TWO_IX, errmsg_out);
   if (*status != CL_SUCCESS) FAIL(*errmsg_out, fail_set_bnd);
   *status = init_buffers(ret, sim_size, status, errmsg_out);
   if (*status != CL_SUCCESS) FAIL(*errmsg_out, fail_buffers);
@@ -623,6 +630,196 @@ cl_int cl_solve_step(cl_bundle bundle, unsigned int sim_size, float a, float c,
   cl_mem temp = bundle->d_buffers[0];
   bundle->d_buffers[0] = bundle->d_buffers[2];
   bundle->d_buffers[2] = temp;
+fail:
+  *errmsg_out = errmsg;
+  return status;
+}
+
+cl_int cl_project_setup(cl_bundle bundle, size_t sim_size,
+                        const float *restrict h_u, const float *restrict h_v,
+                        const char **errmsg_out) {
+  // swap device buffers 0 and 2 so that `p` is preserved. this is unnecessary
+  // for the first phase of projection, but the swap is cheap and the setup for
+  // both phases is otherwise identical, so we always do it
+  cl_mem temp = bundle->d_buffers[2];
+  bundle->d_buffers[2] = bundle->d_buffers[0];
+  bundle->d_buffers[0] = temp;
+  return cl_setup(bundle, sim_size, h_u, h_v, NULL, errmsg_out);
+}
+
+cl_int cl_project_retrieve(cl_bundle bundle, size_t sim_size,
+                           float *restrict h_u, float *restrict h_v,
+                           const char **errmsg_out) {
+  return cl_retrieve(bundle, sim_size, h_u, h_v, NULL, errmsg_out);
+}
+
+cl_int cl_project_one(cl_bundle bundle, unsigned int sim_size,
+                      const char **errmsg_out) {
+  const char *errmsg = NULL;
+  cl_int status;
+  static const size_t l_sizes[2] = {L_SIZE, L_SIZE};
+  size_t g_sizes[2] = {sim_size / P_SIZE, sim_size};
+
+  status = clSetKernelArg(bundle->kernels[PROJECT_ONE_IX], 0,
+                          sizeof(unsigned int), &sim_size);
+  if (status != CL_SUCCESS)
+    FAIL("Unable to set project_one argument 0 with code: %s\n", fail);
+  status = clSetKernelArg(bundle->kernels[PROJECT_ONE_IX], 1, sizeof(cl_mem),
+                          &bundle->d_buffers[2]);
+  if (status != CL_SUCCESS)
+    FAIL("Unable to set project_one argument 1 with code: %s\n", fail);
+  status = clSetKernelArg(bundle->kernels[PROJECT_ONE_IX], 2, sizeof(cl_mem),
+                          &bundle->d_buffers[0]);
+  if (status != CL_SUCCESS)
+    FAIL("Unable to set project_one argument 2 with code: %s\n", fail);
+  status = clSetKernelArg(bundle->kernels[PROJECT_ONE_IX], 3, sizeof(cl_mem),
+                          &bundle->d_buffers[1]);
+  if (status != CL_SUCCESS)
+    FAIL("Unable to set project_one argument 3 with code: %s\n", fail);
+  status = clSetKernelArg(bundle->kernels[PROJECT_ONE_IX], 4,
+                          sizeof(float) * L_ACTUAL_SIZE, NULL);
+  if (status != CL_SUCCESS)
+    FAIL("Unable to set project_one argument 4 with code: %s\n", fail);
+
+  status = clEnqueueNDRangeKernel(bundle->h_cq, bundle->kernels[PROJECT_ONE_IX],
+                                  2, NULL, g_sizes, l_sizes, 0, NULL, NULL);
+  if (status != CL_SUCCESS)
+    FAIL("Failed to execute project_one with code: %s\n", fail);
+  status = clFinish(bundle->h_cq);
+  if (status != CL_SUCCESS)
+    FAIL("Failed to finish project_one execution with code: %s\n", fail);
+
+  // set_bnd on div
+  g_sizes[0] = sim_size, g_sizes[1] = 4;
+  static const int I_FALSE = 0;
+  status = clSetKernelArg(bundle->kernels[SET_BND_IX], 0, sizeof(unsigned int),
+                          &sim_size);
+  if (status != CL_SUCCESS)
+    FAIL("Failed to set set_bnd argument 0 with code: %s\n", fail);
+  status = clSetKernelArg(bundle->kernels[SET_BND_IX], 1, sizeof(cl_mem),
+                          &bundle->d_buffers[2]);
+  if (status != CL_SUCCESS)
+    FAIL("Failed to set set_bnd argument 1 with code: %s\n", fail);
+  status =
+      clSetKernelArg(bundle->kernels[SET_BND_IX], 2, sizeof(int), &I_FALSE);
+  if (status != CL_SUCCESS)
+    FAIL("Failed to set set_bnd argument 2 with code: %s\n", fail);
+  status =
+      clSetKernelArg(bundle->kernels[SET_BND_IX], 3, sizeof(int), &I_FALSE);
+  if (status != CL_SUCCESS)
+    FAIL("Failed to set set_bnd argument 3 with code: %s\n", fail);
+  status = clEnqueueNDRangeKernel(bundle->h_cq, bundle->kernels[SET_BND_IX], 2,
+                                  NULL, g_sizes, NULL, 0, NULL, NULL);
+  if (status != CL_SUCCESS)
+    FAIL("Failed to execute set_bnd kernel with code: %s\n", fail);
+
+  // zero fill p
+  static const float ZERO = 0.0f;
+  status = clEnqueueFillBuffer(bundle->h_cq, bundle->d_buffers[0], &ZERO,
+                               sizeof(float), 0, ACTUAL_SIZE * sizeof(float), 0,
+                               NULL, NULL);
+  if (status != CL_SUCCESS)
+    FAIL("Failed to zero-fill device buffer 0 with code: %s\n", fail);
+
+  // swap device buffers 1 and 2 so that div is in the x0 buffer location
+  cl_mem temp = bundle->d_buffers[1];
+  bundle->d_buffers[1] = bundle->d_buffers[2];
+  bundle->d_buffers[2] = temp;
+
+  // wait for set_bnd on div and zero-fill of p to finish
+  status = clFinish(bundle->h_cq);
+  if (status != CL_SUCCESS)
+    FAIL("Failed to finish set_bnd executions with code: %s\n", fail);
+fail:
+  *errmsg_out = errmsg;
+  return status;
+}
+
+cl_int cl_project_two(cl_bundle bundle, unsigned int sim_size,
+                      const char **errmsg_out) {
+  const char *errmsg = NULL;
+  cl_int status;
+  static const size_t l_sizes[2] = {L_SIZE, L_SIZE};
+  size_t g_sizes[2] = {sim_size / P_SIZE, sim_size};
+
+  status = clSetKernelArg(bundle->kernels[PROJECT_TWO_IX], 0,
+                          sizeof(unsigned int), &sim_size);
+  if (status != CL_SUCCESS)
+    FAIL("Unable to set project_two argument 0 with code: %s\n", fail);
+  status = clSetKernelArg(bundle->kernels[PROJECT_TWO_IX], 1, sizeof(cl_mem),
+                          &bundle->d_buffers[0]);
+  if (status != CL_SUCCESS)
+    FAIL("Unable to set project_two argument 1 with code: %s\n", fail);
+  status = clSetKernelArg(bundle->kernels[PROJECT_TWO_IX], 2, sizeof(cl_mem),
+                          &bundle->d_buffers[1]);
+  if (status != CL_SUCCESS)
+    FAIL("Unable to set project_two argument 2 with code: %s\n", fail);
+  status = clSetKernelArg(bundle->kernels[PROJECT_TWO_IX], 3, sizeof(cl_mem),
+                          &bundle->d_buffers[2]);
+  if (status != CL_SUCCESS)
+    FAIL("Unable to set project_two argument 3 with code: %s\n", fail);
+  status = clSetKernelArg(bundle->kernels[PROJECT_TWO_IX], 4,
+                          sizeof(float) * L_ACTUAL_SIZE, NULL);
+  if (status != CL_SUCCESS)
+    FAIL("Unable to set project_two argument 4 with code: %s\n", fail);
+
+  status = clEnqueueNDRangeKernel(bundle->h_cq, bundle->kernels[PROJECT_TWO_IX],
+                                  2, NULL, g_sizes, l_sizes, 0, NULL, NULL);
+  if (status != CL_SUCCESS)
+    FAIL("Failed to execute project_two with code: %s\n", fail);
+  status = clFinish(bundle->h_cq);
+  if (status != CL_SUCCESS)
+    FAIL("Failed to finish project_two execution with code: %s\n", fail);
+
+  g_sizes[0] = sim_size, g_sizes[1] = 4;
+  static const int I_TRUE = 1, I_FALSE = 0;
+
+  // set_bnd on u
+  status = clSetKernelArg(bundle->kernels[SET_BND_IX], 0, sizeof(unsigned int),
+                          &sim_size);
+  if (status != CL_SUCCESS)
+    FAIL("Failed to set set_bnd argument 0 with code: %s\n", fail);
+  status = clSetKernelArg(bundle->kernels[SET_BND_IX], 1, sizeof(cl_mem),
+                          &bundle->d_buffers[0]);
+  if (status != CL_SUCCESS)
+    FAIL("Failed to set set_bnd argument 1 with code: %s\n", fail);
+  status = clSetKernelArg(bundle->kernels[SET_BND_IX], 2, sizeof(int), &I_TRUE);
+  if (status != CL_SUCCESS)
+    FAIL("Failed to set set_bnd argument 2 with code: %s\n", fail);
+  status =
+      clSetKernelArg(bundle->kernels[SET_BND_IX], 3, sizeof(int), &I_FALSE);
+  if (status != CL_SUCCESS)
+    FAIL("Failed to set set_bnd argument 3 with code: %s\n", fail);
+  status = clEnqueueNDRangeKernel(bundle->h_cq, bundle->kernels[SET_BND_IX], 2,
+                                  NULL, g_sizes, NULL, 0, NULL, NULL);
+  if (status != CL_SUCCESS)
+    FAIL("Failed to execute set_bnd kernel with code: %s\n", fail);
+
+  // set_bnd on v
+  status = clSetKernelArg(bundle->kernels[SET_BND_IX], 0, sizeof(unsigned int),
+                          &sim_size);
+  if (status != CL_SUCCESS)
+    FAIL("Failed to set set_bnd argument 0 with code: %s\n", fail);
+  status = clSetKernelArg(bundle->kernels[SET_BND_IX], 1, sizeof(cl_mem),
+                          &bundle->d_buffers[1]);
+  if (status != CL_SUCCESS)
+    FAIL("Failed to set set_bnd argument 1 with code: %s\n", fail);
+  status =
+      clSetKernelArg(bundle->kernels[SET_BND_IX], 2, sizeof(int), &I_FALSE);
+  if (status != CL_SUCCESS)
+    FAIL("Failed to set set_bnd argument 2 with code: %s\n", fail);
+  status = clSetKernelArg(bundle->kernels[SET_BND_IX], 3, sizeof(int), &I_TRUE);
+  if (status != CL_SUCCESS)
+    FAIL("Failed to set set_bnd argument 3 with code: %s\n", fail);
+  status = clEnqueueNDRangeKernel(bundle->h_cq, bundle->kernels[SET_BND_IX], 2,
+                                  NULL, g_sizes, NULL, 0, NULL, NULL);
+  if (status != CL_SUCCESS)
+    FAIL("Failed to execute set_bnd kernel with code: %s\n", fail);
+
+  // wait for set_bnd on u and v to finish
+  status = clFinish(bundle->h_cq);
+  if (status != CL_SUCCESS)
+    FAIL("Failed to finish set_bnd executions with code: %s\n", fail);
 fail:
   *errmsg_out = errmsg;
   return status;

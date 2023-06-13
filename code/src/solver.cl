@@ -154,3 +154,86 @@ kernel void jacobi(const unsigned int sim_size, global float *A,
               l_A[L_IX(l_i + 1, l_j)] + l_A[L_IX(l_i - 1, l_j)])) *
         c_inv;
 }
+
+kernel void project_one(const unsigned int sim_size, global float *div,
+                        global const float *u, global const float *v,
+                        local float *l_A) {
+  size_t g_begin = IX(get_global_id(1) + ROW_BORDER, ACTUAL_G0 + COL_BORDER);
+  size_t l_begin =
+      L_IX(get_local_id(1) + ROW_BORDER, get_local_id(0) + COL_BORDER);
+
+  local_copy(sim_size, u, l_A);
+  for (size_t i = 0; i < get_local_size(0) * P_SIZE; i += get_local_size(0))
+    div[g_begin + i] =
+        -0.5f / sim_size *
+        (l_A[l_begin + i + L_ROW_SIZE] - l_A[l_begin + i - L_ROW_SIZE]);
+  work_group_barrier(CLK_LOCAL_MEM_FENCE);
+
+  local_copy(sim_size, v, l_A);
+  for (size_t i = 0; i < get_local_size(0) * P_SIZE; i += get_local_size(0))
+    div[g_begin + i] +=
+        -0.5f / sim_size * (l_A[l_begin + i + 1] - l_A[l_begin + i - 1]);
+}
+
+kernel void project_one_multi(const unsigned int sim_size, global float *div,
+                              global const float *u, global const float *v,
+                              local float *l_A) {
+  (void)l_A;  // unused parameter
+  size_t g_begin = IX(get_global_id(1) + ROW_BORDER, ACTUAL_G0 + COL_BORDER);
+  const float multiplier = -0.5f / sim_size;
+  for (size_t i = 0; i < get_local_size(0) * P_SIZE; i += get_local_size(0))
+    div[g_begin + i] =
+        multiplier * (u[g_begin + i + ROW_SIZE] - u[g_begin + i - ROW_SIZE] +
+                      v[g_begin + i + 1] - v[g_begin + i - 1]);
+}
+
+kernel void project_one_simple(const unsigned int sim_size, global float *div,
+                               global const float *u, global const float *v,
+                               local float *l_A) {
+  (void)l_A;  // unused parameter
+  size_t g_begin =
+      IX(get_global_id(1) + ROW_BORDER, get_global_id(0) + COL_BORDER);
+  const float multiplier = -0.5f / sim_size;
+  div[g_begin] = multiplier * (u[g_begin + ROW_SIZE] - u[g_begin - ROW_SIZE] +
+                               v[g_begin + 1] - v[g_begin - 1]);
+}
+
+kernel void project_two(const unsigned int sim_size, global float *u,
+                        global float *v, global const float *p,
+                        local float *l_p) {
+  size_t g_begin = IX(get_global_id(1) + ROW_BORDER, ACTUAL_G0 + COL_BORDER);
+  size_t l_begin =
+      L_IX(get_local_id(1) + ROW_BORDER, get_local_id(0) + COL_BORDER);
+
+  local_copy(sim_size, p, l_p);
+  for (size_t i = 0; i < get_local_size(0) * P_SIZE; i += get_local_size(0)) {
+    u[g_begin + i] -=
+        0.5f * sim_size *
+        (l_p[l_begin + i + L_ROW_SIZE] - l_p[l_begin + i - L_ROW_SIZE]);
+    v[g_begin + i] -=
+        0.5f * sim_size * (l_p[l_begin + i + 1] - l_p[l_begin + i - 1]);
+  }
+}
+
+kernel void project_two_multi(const unsigned int sim_size, global float *u,
+                              global float *v, global const float *p,
+                              local float *l_p) {
+  size_t g_begin = IX(get_global_id(1) + ROW_BORDER, ACTUAL_G0 + COL_BORDER);
+
+  for (size_t i = 0; i < get_local_size(0) * P_SIZE; i += get_local_size(0)) {
+    u[g_begin + i] -= 0.5f * sim_size *
+                      (p[g_begin + i + ROW_SIZE] - p[g_begin + i - ROW_SIZE]);
+    v[g_begin + i] -=
+        0.5f * sim_size * (p[g_begin + i + 1] - p[g_begin + i - 1]);
+  }
+}
+
+kernel void project_two_simple(const unsigned int sim_size, global float *u,
+                               global float *v, global const float *p,
+                               local float *l_p) {
+  size_t g_begin = IX(get_global_id(1) + ROW_BORDER, ACTUAL_G0 + COL_BORDER);
+
+  u[g_begin] -=
+      0.5f * sim_size * (p[g_begin + ROW_SIZE] - p[g_begin - ROW_SIZE]);
+  v[g_begin] -= 0.5f * sim_size * (p[g_begin + 1] - p[g_begin - 1]);
+}

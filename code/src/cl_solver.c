@@ -104,28 +104,25 @@ static void advect(size_t sim_size, MatrixType type, float* restrict d,
 static void project(size_t sim_size, float* restrict u, float* restrict v,
                     float* restrict p, float* restrict div,
                     float* restrict scratch, cl_bundle bundle) {
-  for (size_t i = ROW_BEGIN; i < ROW_END; i++) {
-    for (size_t j = COL_BEGIN; j < COL_END; j++) {
-      div[IX(i, j)] = -0.5f *
-                      (u[IX(i + 1, j)] - u[IX(i - 1, j)] + v[IX(i, j + 1)] -
-                       v[IX(i, j - 1)]) /
-                      sim_size;
-      p[IX(i, j)] = 0;
-    }
+  (void)p, (void)div, (void)scratch;  // unused parameters
+  const char* errmsg = NULL;
+  int status = cl_project_setup(bundle, sim_size, u, v, &errmsg);
+  if (status) abort();
+  status = cl_project_one(bundle, sim_size, &errmsg);
+  if (status) abort();
+  for (size_t k = 0; k < 20; ++k) {
+    status =
+        cl_solve_step(bundle, sim_size, 1, 4, (bool[2]){false, false}, &errmsg);
+    if (status) abort();
   }
-  set_bnd(sim_size, SLV_MAT_D, div);
-  set_bnd(sim_size, SLV_MAT_D, p);
 
-  solve(sim_size, SLV_MAT_D, p, div, scratch, 1, 4, bundle);
-
-  for (size_t i = ROW_BEGIN; i < ROW_END; i++) {
-    for (size_t j = COL_BEGIN; j < COL_END; j++) {
-      u[IX(i, j)] -= 0.5f * sim_size * (p[IX(i + 1, j)] - p[IX(i - 1, j)]);
-      v[IX(i, j)] -= 0.5f * sim_size * (p[IX(i, j + 1)] - p[IX(i, j - 1)]);
-    }
-  }
-  set_bnd(sim_size, SLV_MAT_U, u);
-  set_bnd(sim_size, SLV_MAT_V, v);
+  // setup again; result of solver will be preserved
+  status = cl_project_setup(bundle, sim_size, u, v, &errmsg);
+  if (status) abort();
+  status = cl_project_two(bundle, sim_size, &errmsg);
+  if (status) abort();
+  status = cl_project_retrieve(bundle, sim_size, u, v, &errmsg);
+  if (status) abort();
 }
 
 void cl_solver_dens_step(Solver* solver) {
