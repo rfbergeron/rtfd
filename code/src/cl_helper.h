@@ -21,9 +21,6 @@ cl_int cl_solve_setup(cl_bundle bundle, size_t sim_size,
                       const char **errmsg_out);
 cl_int cl_solve_retrieve(cl_bundle bundle, size_t sim_size, float *h_x,
                          const char **errmsg_out);
-cl_int cl_step_paranoid(cl_bundle bundle, unsigned int sim_size, float a,
-                        float c, float *x, bool negate_axes[2],
-                        const char **errmsg_out);
 int cl_solve_step(cl_bundle bundle, unsigned int sim_size, float a, float c,
                   bool negate_axes[2], const char **errmsg_out);
 #endif

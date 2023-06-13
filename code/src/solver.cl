@@ -3,6 +3,10 @@
 #define BOTTOM_BORDER 1
 #define LEFT_BORDER 2
 #define RIGHT_BORDER 3
+#define ACTUAL_G0 \
+  (get_group_id(0) * P_SIZE * get_local_size(0) + get_local_id(0))
+#define G_COL_END \
+  (COL_BEGIN + (get_group_id(0) + 1) * P_SIZE * get_local_size(0))
 #define L_ROW_END (get_local_size(1) + ROW_BEGIN)
 #define L_COL_END (get_local_size(0) * P_SIZE + COL_BEGIN)
 #define L_ROW_SIZE (get_local_size(0) * P_SIZE + 2 * COL_BORDER)
@@ -100,47 +104,53 @@ kernel void jacobi_multi(const unsigned int sim_size, global float *A,
                          global const float *A0, global float *A1,
                          local float *l_A, const float a, const float c_inv) {
   (void)l_A;  // unused parameter
-  size_t g0_actual =
-      get_group_id(0) * P_SIZE * get_local_size(0) + get_local_id(0);
-  size_t A_begin = IX(get_global_id(1) + ROW_BORDER, g0_actual + COL_BORDER);
-  for (size_t i = 0; i < get_local_size(0) * P_SIZE; i += get_local_size(0))
-    A1[A_begin + i] =
-        (A0[A_begin + i] +
-         a * (A[A_begin + i + 1] + A[A_begin + i - 1] +
-              A[A_begin + i + ROW_SIZE] + A[A_begin + i - ROW_SIZE])) *
+  const size_t g_i = get_global_id(1) + ROW_BORDER;
+  for (size_t g_j = ACTUAL_G0 + COL_BORDER; g_j < G_COL_END;
+       g_j += get_local_size(0))
+    A1[IX(g_i, g_j)] =
+        (A0[IX(g_i, g_j)] + a * (A[IX(g_i + 1, g_j)] + A[IX(g_i - 1, g_j)] +
+                                 A[IX(g_i, g_j + 1)] + A[IX(g_i, g_j - 1)])) *
         c_inv;
+}
+
+void local_copy(const unsigned int sim_size, global const float *A,
+                local float *l_A) {
+  // include left and right border elements when copying to local memory
+  size_t g_i = get_global_id(1) + ROW_BORDER,
+         l_i = get_local_id(1) + ROW_BORDER;
+  for (size_t l_j = get_local_id(0), g_j = ACTUAL_G0; l_j < L_ROW_SIZE;
+       l_j += get_local_size(0), g_j += get_local_size(0))
+    l_A[L_IX(l_i, l_j)] = A[IX(g_i, g_j)];
+
+  // TODO: replace magic number so that this function still works when private
+  // and local size changes
+  // (i, j) -> linear index in the range [0, 256)
+  size_t col_offset = 16 * get_local_id(1) + get_local_id(0);
+  // column of work item with local id (0, 0) + col_offset + COL_BEGIN
+  size_t g_col =
+      COL_BEGIN + get_group_id(0) * get_local_size(0) * P_SIZE + col_offset;
+  size_t g_top = ROW_BEGIN + get_group_id(1) * get_local_size(1) - 1;
+  size_t g_bot = ROW_BEGIN + (get_group_id(1) + 1) * get_local_size(1);
+
+  // set top border
+  l_A[L_IX(ROW_BEGIN - 1, COL_BEGIN + col_offset)] = A[IX(g_top, g_col)];
+  // set bottom border
+  l_A[L_IX(L_ROW_END, COL_BEGIN + col_offset)] = A[IX(g_bot, g_col)];
+
+  work_group_barrier(CLK_LOCAL_MEM_FENCE);
 }
 
 kernel void jacobi(const unsigned int sim_size, global float *A,
                    global const float *A0, global float *A1, local float *l_A,
                    const float a, const float c_inv) {
-  size_t g0_actual =
-      get_group_id(0) * P_SIZE * get_local_size(0) + get_local_id(0);
-  size_t A_begin = IX(get_global_id(1) + ROW_BORDER, g0_actual + COL_BORDER);
-  size_t l_A_begin =
-      L_IX(get_local_id(1) + ROW_BORDER, get_local_id(0) + COL_BORDER);
-  // include left and right border elements when copying to local memory
-  for (size_t i = 0; i < get_local_size(0) * (P_SIZE + 2);
-       i += get_local_size(0))
-    l_A[l_A_begin - COL_BORDER + i] = A[A_begin - COL_BORDER + i];
-
-  // (i, j) -> linear index in the range [0, 256)
-  size_t col_offset = 16 * get_local_id(1) + get_local_id(0);
-  // set top border
-  l_A[L_IX(ROW_BEGIN - 1, COL_BEGIN + col_offset)] = A[IX(
-      ROW_BEGIN + get_group_id(1) * get_local_size(1) - 1,
-      COL_BEGIN + get_group_id(0) * get_local_size(0) * P_SIZE + col_offset)];
-  // set bottom border
-  l_A[L_IX(L_ROW_END, COL_BEGIN + col_offset)] = A[IX(
-      (get_group_id(1) + 1) * get_local_size(1),
-      COL_BEGIN + get_group_id(0) * get_local_size(0) * P_SIZE + col_offset)];
-
-  work_group_barrier(CLK_LOCAL_MEM_FENCE);
-
-  for (size_t i = 0; i < get_local_size(0) * P_SIZE; i += get_local_size(0))
-    A1[A_begin + i] = (A0[A_begin + i] +
-                       a * (l_A[l_A_begin + i + 1] + l_A[l_A_begin + i - 1] +
-                            l_A[l_A_begin + i + L_ROW_SIZE] +
-                            l_A[l_A_begin + i - L_ROW_SIZE])) *
-                      c_inv;
+  local_copy(sim_size, A, l_A);
+  const size_t g_i = get_global_id(1) + ROW_BORDER,
+               l_i = get_local_id(1) + ROW_BORDER;
+  for (size_t l_j = get_local_id(0) + COL_BORDER, g_j = ACTUAL_G0 + COL_BORDER;
+       l_j < L_COL_END; l_j += get_local_size(0), g_j += get_local_size(0))
+    A1[IX(g_i, g_j)] =
+        (A0[IX(g_i, g_j)] +
+         a * (l_A[L_IX(l_i, l_j + 1)] + l_A[L_IX(l_i, l_j - 1)] +
+              l_A[L_IX(l_i + 1, l_j)] + l_A[L_IX(l_i - 1, l_j)])) *
+        c_inv;
 }

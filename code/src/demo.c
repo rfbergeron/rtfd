@@ -48,8 +48,7 @@ int main(int argc, char **argv) {
   printf("\t Clear the simulation by pressing the 'c' key\n");
   printf("\t Quit by pressing the 'q' key\n");
 
-  Solver *solver =
-      solver_init(sim_size, SLV_SSE4_2, dt, diff, visc, force, source);
+  Solver *solver = solver_init(sim_size, SLV_CL, dt, diff, visc, force, source);
   if (!solver) exit(EXIT_FAILURE);
   solver_clear(solver, SLV_MAT_ALL);
 

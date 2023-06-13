@@ -6,9 +6,6 @@
 #include "cl_common.h"
 #include "cl_helper.h"
 
-#define SOLVER cl_solve
-#define SOLVE(sim_size, type, x, x0, x1, a, c, bundle) \
-  SOLVER(sim_size, type, x, x0, x1, a, c, bundle)
 #define SWAP(x0, x)  \
   {                  \
     float* tmp = x0; \
@@ -53,32 +50,9 @@ static void set_corners(size_t sim_size, MatrixType type, float* x) {
   }
 }
 
-static void cl_solve_paranoid(size_t sim_size, MatrixType type,
-                              float* restrict x, const float* restrict x0,
-                              float* restrict x1, float a, float c,
-                              cl_bundle bundle) {
-  (void)x1;  // unused parameter
-  const char* errmsg;
-  int status = cl_solve_setup(bundle, sim_size, x, x0, &errmsg);
-  if (status) abort();
-  for (size_t k = 0; k < 20; ++k) {
-    status = cl_step_paranoid(bundle, sim_size, a, c, x,
-                              (bool[2]){type == SLV_MAT_U, type == SLV_MAT_V},
-                              &errmsg);
-    if (status) abort();
-    set_bnd(sim_size, type, x);
-    /*
-    for (size_t i = 0; i < sim_size + 2 * ROW_BORDER; ++i)
-      for (size_t j = 0; j < ROW_SIZE; ++j)
-        if (x[IX(i, j)] > 0.0f || x[IX(i, j)] < -0.0f)
-          fprintf(stderr, "%zu: x[%zu][%zu]: %f\n", k, i, j, x[IX(i, j)]);
-    */
-  }
-}
-
-static void cl_solve(size_t sim_size, MatrixType type, float* restrict x,
-                     const float* restrict x0, float* restrict x1, float a,
-                     float c, cl_bundle bundle) {
+static void solve(size_t sim_size, MatrixType type, float* restrict x,
+                  const float* restrict x0, float* restrict x1, float a,
+                  float c, cl_bundle bundle) {
   (void)x1;  // unused parameter
   const char* errmsg;
   int status = cl_solve_setup(bundle, sim_size, x, x0, &errmsg);
@@ -93,41 +67,11 @@ static void cl_solve(size_t sim_size, MatrixType type, float* restrict x,
   if (status) abort();
 }
 
-static void lin_solve(size_t sim_size, MatrixType type, float* restrict x,
-                      const float* restrict x0, float* restrict x1, float a,
-                      float c, cl_bundle bundle) {
-  (void)x1;      // unused parameter
-  (void)bundle;  // unused parameter
-  for (size_t k = 0; k < 20; k++) {
-    for (size_t i = ROW_BEGIN; i < ROW_END; i++) {
-      for (size_t j = COL_BEGIN; j < COL_END; j++) {
-        x[IX(i, j)] = (x0[IX(i, j)] + a * (x[IX(i - 1, j)] + x[IX(i + 1, j)] +
-                                           x[IX(i, j - 1)] + x[IX(i, j + 1)])) /
-                      c;
-      }
-    }
-    set_bnd(sim_size, type, x);
-    /*
-    for (size_t i = 0; i < sim_size + 2 * ROW_BORDER; ++i)
-      for (size_t j = 0; j < ROW_SIZE; ++j)
-        if (x[IX(i, j)] > 0.0f || x[IX(i, j)] < -0.0f)
-          fprintf(stderr, "%zu: x[%zu][%zu]: %f\n", k, i, j, x[IX(i, j)]);
-    */
-  }
-}
-
 static void diffuse(size_t sim_size, MatrixType type, float* restrict x,
                     const float* restrict x0, float* restrict x1, float diff,
                     float dt, cl_bundle bundle) {
   float a = dt * diff * sim_size * sim_size;
-  SOLVE(sim_size, type, x, x0, x1, a, 1 + 4 * a, bundle);
-}
-
-static void cl_diffuse(size_t sim_size, MatrixType type, float* restrict x,
-                       const float* restrict x0, float* restrict x1, float diff,
-                       float dt, cl_bundle bundle) {
-  float a = dt * diff * sim_size * sim_size;
-  SOLVE(sim_size, type, x, x0, x1, a, 1 + 4 * a, bundle);
+  solve(sim_size, type, x, x0, x1, a, 1 + 4 * a, bundle);
 }
 
 static void advect(size_t sim_size, MatrixType type, float* restrict d,
@@ -172,7 +116,7 @@ static void project(size_t sim_size, float* restrict u, float* restrict v,
   set_bnd(sim_size, SLV_MAT_D, div);
   set_bnd(sim_size, SLV_MAT_D, p);
 
-  SOLVE(sim_size, SLV_MAT_D, p, div, scratch, 1, 4, bundle);
+  solve(sim_size, SLV_MAT_D, p, div, scratch, 1, 4, bundle);
 
   for (size_t i = ROW_BEGIN; i < ROW_END; i++) {
     for (size_t j = COL_BEGIN; j < COL_END; j++) {

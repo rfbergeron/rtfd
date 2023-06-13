@@ -189,8 +189,6 @@ static cl_int init_kernel(cl_bundle bundle, size_t kern_ix,
   else
     buffer[len] = '\0';
 
-  fprintf(stderr, "Read program:\n%s", buffer);
-
   const char *buffer_ptr = buffer;
   cl_program prog =
       clCreateProgramWithSource(bundle->ctx, 1, &buffer_ptr, NULL, &status);
@@ -432,6 +430,68 @@ cl_int free_bundle(cl_bundle bundle) {
   return CL_SUCCESS;
 }
 
+static cl_int cl_setup(cl_bundle bundle, size_t sim_size,
+                       const float *restrict h_x, const float *restrict h_x0,
+                       const float *restrict h_x1, const char **errmsg_out) {
+  cl_int status = CL_SUCCESS;
+  const char *errmsg = NULL;
+  if (h_x) {
+    status =
+        clEnqueueWriteBuffer(bundle->h_cq, bundle->d_buffers[0], CL_TRUE, 0,
+                             sizeof(float) * ACTUAL_SIZE, h_x, 0, NULL, NULL);
+    if (status != CL_SUCCESS)
+      FAIL("Unable to write host buffer with code %s.\n", fail);
+  }
+  if (h_x0) {
+    status =
+        clEnqueueWriteBuffer(bundle->h_cq, bundle->d_buffers[1], CL_TRUE, 0,
+                             sizeof(float) * ACTUAL_SIZE, h_x0, 0, NULL, NULL);
+    if (status != CL_SUCCESS)
+      FAIL("Unable to write host buffer with code %s.\n", fail);
+  }
+  if (h_x1) {
+    status =
+        clEnqueueWriteBuffer(bundle->h_cq, bundle->d_buffers[2], CL_TRUE, 0,
+                             sizeof(float) * ACTUAL_SIZE, h_x1, 0, NULL, NULL);
+    if (status != CL_SUCCESS)
+      FAIL("Unable to write host buffer with code %s.\n", fail);
+  }
+fail:
+  *errmsg_out = errmsg;
+  return status;
+}
+
+static cl_int cl_retrieve(cl_bundle bundle, size_t sim_size,
+                          float *restrict h_x, float *restrict h_x0,
+                          float *restrict h_x1, const char **errmsg_out) {
+  cl_int status = CL_SUCCESS;
+  const char *errmsg = NULL;
+  if (h_x) {
+    status =
+        clEnqueueReadBuffer(bundle->h_cq, bundle->d_buffers[0], CL_TRUE, 0,
+                            sizeof(float) * ACTUAL_SIZE, h_x, 0, NULL, NULL);
+    if (status != CL_SUCCESS)
+      FAIL("Unable to write host buffer with code %s.\n", fail);
+  }
+  if (h_x0) {
+    status =
+        clEnqueueReadBuffer(bundle->h_cq, bundle->d_buffers[1], CL_TRUE, 0,
+                            sizeof(float) * ACTUAL_SIZE, h_x0, 0, NULL, NULL);
+    if (status != CL_SUCCESS)
+      FAIL("Unable to write host buffer with code %s.\n", fail);
+  }
+  if (h_x1) {
+    status =
+        clEnqueueReadBuffer(bundle->h_cq, bundle->d_buffers[2], CL_TRUE, 0,
+                            sizeof(float) * ACTUAL_SIZE, h_x1, 0, NULL, NULL);
+    if (status != CL_SUCCESS)
+      FAIL("Unable to write host buffer with code %s.\n", fail);
+  }
+fail:
+  *errmsg_out = errmsg;
+  return status;
+}
+
 /*
 static float d_full_reduce(cl_command_queue h_cq, cl_kernel kern,
                            unsigned int N, buffer_pair buffers[2],
@@ -483,98 +543,12 @@ fail:
 cl_int cl_solve_setup(cl_bundle bundle, size_t sim_size,
                       const float *restrict h_x, const float *restrict h_x0,
                       const char **errmsg_out) {
-  cl_int status;
-  const char *errmsg = NULL;
-  status =
-      clEnqueueWriteBuffer(bundle->h_cq, bundle->d_buffers[0], CL_FALSE, 0,
-                           sizeof(float) * ACTUAL_SIZE, h_x, 0, NULL, NULL);
-  if (status != CL_SUCCESS)
-    FAIL("Unable to write device buffer 1 with code %s.\n", fail);
-  status =
-      clEnqueueWriteBuffer(bundle->h_cq, bundle->d_buffers[1], CL_FALSE, 0,
-                           sizeof(float) * ACTUAL_SIZE, h_x0, 0, NULL, NULL);
-  if (status != CL_SUCCESS)
-    FAIL("Unable to write device buffer 2 with code %s.\n", fail);
-  status = clFinish(bundle->h_cq);
-  if (status != CL_SUCCESS)
-    FAIL(
-        "Unable finish command queue while writing device buffers with code "
-        "%s.\n",
-        fail);
-fail:
-  *errmsg_out = errmsg;
-  return status;
+  return cl_setup(bundle, sim_size, h_x, h_x0, NULL, errmsg_out);
 }
 
 cl_int cl_solve_retrieve(cl_bundle bundle, size_t sim_size, float *h_x,
                          const char **errmsg_out) {
-  cl_int status;
-  const char *errmsg = NULL;
-  status = clEnqueueReadBuffer(bundle->h_cq, bundle->d_buffers[0], CL_TRUE, 0,
-                               sizeof(float) * ACTUAL_SIZE, h_x, 0, NULL, NULL);
-  if (status != CL_SUCCESS)
-    FAIL("Unable to write host buffer with code %s.\n", fail);
-fail:
-  *errmsg_out = errmsg;
-  return status;
-}
-
-cl_int cl_step_paranoid(cl_bundle bundle, unsigned int sim_size, float a,
-                        float c, float *x, bool negate_axes[2],
-                        const char **errmsg_out) {
-  (void)negate_axes;  // unused parameter
-  const char *errmsg = NULL;
-  cl_int status;
-  float c_inv = 1.0f / c;
-  static const size_t l_sizes[2] = {L_SIZE, L_SIZE};
-  size_t g_sizes[2] = {sim_size / P_SIZE, sim_size};
-  // size_t g_sizes[2] = {sim_size, sim_size};
-  status = clEnqueueWriteBuffer(bundle->h_cq, bundle->d_buffers[0], CL_TRUE, 0,
-                                sizeof(float) * ACTUAL_SIZE, x, 0, NULL, NULL);
-  if (status != CL_SUCCESS)
-    FAIL("Unable to write device buffer 1 with code %s.\n", fail);
-  status = clSetKernelArg(bundle->kernels[JACOBI_IX], 0, sizeof(unsigned int),
-                          &sim_size);
-  if (status != CL_SUCCESS)
-    FAIL("Unable to set kernel argument 0 with code: %s\n", fail);
-  status = clSetKernelArg(bundle->kernels[JACOBI_IX], 1, sizeof(cl_mem),
-                          &bundle->d_buffers[0]);
-  if (status != CL_SUCCESS)
-    FAIL("Unable to set jacobi kernel argument 1 with code: %s\n", fail);
-  status = clSetKernelArg(bundle->kernels[JACOBI_IX], 2, sizeof(cl_mem),
-                          &bundle->d_buffers[1]);
-  if (status != CL_SUCCESS)
-    FAIL("Unable to set jacobi kernel argument 2 with code: %s\n", fail);
-  status = clSetKernelArg(bundle->kernels[JACOBI_IX], 3, sizeof(cl_mem),
-                          &bundle->d_buffers[2]);
-  if (status != CL_SUCCESS)
-    FAIL("Unable to set jacobi kernel argument 3 with code: %s\n", fail);
-  status = clSetKernelArg(bundle->kernels[JACOBI_IX], 4,
-                          sizeof(float) * L_ACTUAL_SIZE, NULL);
-  if (status != CL_SUCCESS)
-    FAIL("Unable to set jacobi kernel argument 4 with code: %s\n", fail);
-  status = clSetKernelArg(bundle->kernels[JACOBI_IX], 5, sizeof(float), &a);
-  if (status != CL_SUCCESS)
-    FAIL("Unable to set jacobi kernel argument 5 with code: %s\n", fail);
-  status = clSetKernelArg(bundle->kernels[JACOBI_IX], 6, sizeof(float), &c_inv);
-  if (status != CL_SUCCESS)
-    FAIL("Unable to set jacobi kernel argument 6 with code: %s\n", fail);
-  /*
-  fprintf(stderr, "Running jacobi kernel with global dimensions {%zu, %zu}, "
-          "local dimensions {%zu, %zu}, and private size %zu.\n", g_sizes[0],
-  g_sizes[1], l_sizes[0], l_sizes[1], (size_t)P_SIZE);
-          */
-  status = clEnqueueNDRangeKernel(bundle->h_cq, bundle->kernels[JACOBI_IX], 2,
-                                  NULL, g_sizes, l_sizes, 0, NULL, NULL);
-  if (status != CL_SUCCESS)
-    FAIL("Failed to execute jacobi kernel with code: %s\n", fail);
-  status = clEnqueueReadBuffer(bundle->h_cq, bundle->d_buffers[2], CL_TRUE, 0,
-                               sizeof(float) * ACTUAL_SIZE, x, 0, NULL, NULL);
-  if (status != CL_SUCCESS)
-    FAIL("Failed to read jacobi results with code: %s\n", fail);
-fail:
-  *errmsg_out = errmsg;
-  return status;
+  return cl_retrieve(bundle, sim_size, h_x, NULL, NULL, errmsg_out);
 }
 
 cl_int cl_solve_step(cl_bundle bundle, unsigned int sim_size, float a, float c,
