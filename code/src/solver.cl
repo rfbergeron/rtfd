@@ -237,3 +237,24 @@ kernel void project_two_simple(const unsigned int sim_size, global float *u,
       0.5f * sim_size * (p[g_begin + ROW_SIZE] - p[g_begin - ROW_SIZE]);
   v[g_begin] -= 0.5f * sim_size * (p[g_begin + 1] - p[g_begin - 1]);
 }
+
+kernel void advect(const unsigned int sim_size, global float *x,
+                   global const float *x0, global const float *u,
+                   global const float *v, const float dt) {
+  size_t g_i = get_global_id(1) + ROW_BORDER, g_j = ACTUAL_G0 + COL_BORDER;
+  float dt0 = dt * sim_size;
+
+  for (size_t g_j = ACTUAL_G0 + COL_BORDER; g_j < G_COL_END;
+       g_j += get_local_size(0)) {
+    float f32_i =
+        min(ROW_END - 0.5f, max(ROW_BEGIN - 0.5f, g_i - dt0 * u[IX(g_i, g_j)]));
+    float g_i0, s1 = fract(f32_i, &g_i0), g_i1 = g_i0 + 1.0f, s0 = 1.0f - s1;
+    float f32_j =
+        min(COL_END - 0.5f, max(COL_BEGIN - 0.5f, g_j - dt0 * v[IX(g_i, g_j)]));
+    float g_j0, t1 = fract(f32_j, &g_j0), g_j1 = g_j0 + 1.0f, t0 = 1.0f - t1;
+    x[IX(g_i, g_j)] = s0 * (t0 * x0[IX((size_t)g_i0, (size_t)g_j0)] +
+                            t1 * x0[IX((size_t)g_i0, (size_t)g_j1)]) +
+                      s1 * (t0 * x0[IX((size_t)g_i1, (size_t)g_j0)] +
+                            t1 * x0[IX((size_t)g_i1, (size_t)g_j1)]);
+  }
+}

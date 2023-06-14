@@ -14,11 +14,12 @@
 
 static const char *OPTS_FMT = "-I%s/src -cl-std=CL2.0";
 static const char *KERNEL_NAMES[] = {"jacobi", "set_bnd", "project_one",
-                                     "project_two"};
+                                     "project_two", "advect"};
 #define JACOBI_IX 0
 #define SET_BND_IX 1
 #define PROJECT_ONE_IX 2
 #define PROJECT_TWO_IX 3
+#define ADVECT_IX 4
 #define L_SIZE 16
 #define L_ACTUAL_SIZE \
   ((P_SIZE * L_SIZE + 2 * COL_BORDER) * (L_SIZE + 2 * ROW_BORDER))
@@ -314,15 +315,23 @@ cl_bundle init_gpu_bundle(size_t sim_size, cl_int *status,
   *status = init_kernel(ret, SET_BND_IX, errmsg_out);
   if (*status != CL_SUCCESS) FAIL(*errmsg_out, fail_set_bnd);
   *status = init_kernel(ret, PROJECT_ONE_IX, errmsg_out);
-  if (*status != CL_SUCCESS) FAIL(*errmsg_out, fail_set_bnd);
+  if (*status != CL_SUCCESS) FAIL(*errmsg_out, fail_project_one);
   *status = init_kernel(ret, PROJECT_TWO_IX, errmsg_out);
-  if (*status != CL_SUCCESS) FAIL(*errmsg_out, fail_set_bnd);
+  if (*status != CL_SUCCESS) FAIL(*errmsg_out, fail_project_two);
+  *status = init_kernel(ret, ADVECT_IX, errmsg_out);
+  if (*status != CL_SUCCESS) FAIL(*errmsg_out, fail_advect);
   *status = init_buffers(ret, sim_size, status, errmsg_out);
   if (*status != CL_SUCCESS) FAIL(*errmsg_out, fail_buffers);
   *errmsg_out = errmsg;
   return ret;
   cl_int unload_status;
 fail_buffers:
+  clReleaseKernel(ret->kernels[ADVECT_IX]);
+fail_advect:
+  clReleaseKernel(ret->kernels[PROJECT_TWO_IX]);
+fail_project_two:
+  clReleaseKernel(ret->kernels[PROJECT_ONE_IX]);
+fail_project_one:
   clReleaseKernel(ret->kernels[SET_BND_IX]);
 fail_set_bnd:
   clReleaseKernel(ret->kernels[JACOBI_IX]);
@@ -439,7 +448,8 @@ cl_int free_bundle(cl_bundle bundle) {
 
 static cl_int cl_setup(cl_bundle bundle, size_t sim_size,
                        const float *restrict h_x, const float *restrict h_x0,
-                       const float *restrict h_x1, const char **errmsg_out) {
+                       const float *restrict h_x1, const float *h_x2,
+                       const char **errmsg_out) {
   cl_int status = CL_SUCCESS;
   const char *errmsg = NULL;
   if (h_x) {
@@ -463,6 +473,13 @@ static cl_int cl_setup(cl_bundle bundle, size_t sim_size,
     if (status != CL_SUCCESS)
       FAIL("Unable to write host buffer with code %s.\n", fail);
   }
+  if (h_x2) {
+    status =
+        clEnqueueWriteBuffer(bundle->h_cq, bundle->d_buffers[3], CL_TRUE, 0,
+                             sizeof(float) * ACTUAL_SIZE, h_x2, 0, NULL, NULL);
+    if (status != CL_SUCCESS)
+      FAIL("Unable to write host buffer with code %s.\n", fail);
+  }
 fail:
   *errmsg_out = errmsg;
   return status;
@@ -470,7 +487,8 @@ fail:
 
 static cl_int cl_retrieve(cl_bundle bundle, size_t sim_size,
                           float *restrict h_x, float *restrict h_x0,
-                          float *restrict h_x1, const char **errmsg_out) {
+                          float *restrict h_x1, float *restrict h_x2,
+                          const char **errmsg_out) {
   cl_int status = CL_SUCCESS;
   const char *errmsg = NULL;
   if (h_x) {
@@ -491,6 +509,13 @@ static cl_int cl_retrieve(cl_bundle bundle, size_t sim_size,
     status =
         clEnqueueReadBuffer(bundle->h_cq, bundle->d_buffers[2], CL_TRUE, 0,
                             sizeof(float) * ACTUAL_SIZE, h_x1, 0, NULL, NULL);
+    if (status != CL_SUCCESS)
+      FAIL("Unable to write host buffer with code %s.\n", fail);
+  }
+  if (h_x2) {
+    status =
+        clEnqueueReadBuffer(bundle->h_cq, bundle->d_buffers[3], CL_TRUE, 0,
+                            sizeof(float) * ACTUAL_SIZE, h_x2, 0, NULL, NULL);
     if (status != CL_SUCCESS)
       FAIL("Unable to write host buffer with code %s.\n", fail);
   }
@@ -550,12 +575,12 @@ fail:
 cl_int cl_solve_setup(cl_bundle bundle, size_t sim_size,
                       const float *restrict h_x, const float *restrict h_x0,
                       const char **errmsg_out) {
-  return cl_setup(bundle, sim_size, h_x, h_x0, NULL, errmsg_out);
+  return cl_setup(bundle, sim_size, h_x, h_x0, NULL, NULL, errmsg_out);
 }
 
 cl_int cl_solve_retrieve(cl_bundle bundle, size_t sim_size, float *h_x,
                          const char **errmsg_out) {
-  return cl_retrieve(bundle, sim_size, h_x, NULL, NULL, errmsg_out);
+  return cl_retrieve(bundle, sim_size, h_x, NULL, NULL, NULL, errmsg_out);
 }
 
 cl_int cl_solve_step(cl_bundle bundle, unsigned int sim_size, float a, float c,
@@ -644,13 +669,13 @@ cl_int cl_project_setup(cl_bundle bundle, size_t sim_size,
   cl_mem temp = bundle->d_buffers[2];
   bundle->d_buffers[2] = bundle->d_buffers[0];
   bundle->d_buffers[0] = temp;
-  return cl_setup(bundle, sim_size, h_u, h_v, NULL, errmsg_out);
+  return cl_setup(bundle, sim_size, h_u, h_v, NULL, NULL, errmsg_out);
 }
 
 cl_int cl_project_retrieve(cl_bundle bundle, size_t sim_size,
                            float *restrict h_u, float *restrict h_v,
                            const char **errmsg_out) {
-  return cl_retrieve(bundle, sim_size, h_u, h_v, NULL, errmsg_out);
+  return cl_retrieve(bundle, sim_size, h_u, h_v, NULL, NULL, errmsg_out);
 }
 
 cl_int cl_project_one(cl_bundle bundle, unsigned int sim_size,
@@ -820,6 +845,86 @@ cl_int cl_project_two(cl_bundle bundle, unsigned int sim_size,
   status = clFinish(bundle->h_cq);
   if (status != CL_SUCCESS)
     FAIL("Failed to finish set_bnd executions with code: %s\n", fail);
+fail:
+  *errmsg_out = errmsg;
+  return status;
+}
+
+cl_int cl_advect_setup(cl_bundle bundle, size_t sim_size,
+                       const float *restrict h_x0, const float *restrict h_u,
+                       const float *restrict h_v, const char **errmsg_out) {
+  return cl_setup(bundle, sim_size, NULL, h_x0, h_u, h_v, errmsg_out);
+}
+
+cl_int cl_advect_retrieve(cl_bundle bundle, size_t sim_size, float *h_x,
+                          const char **errmsg_out) {
+  return cl_retrieve(bundle, sim_size, h_x, NULL, NULL, NULL, errmsg_out);
+}
+
+cl_int cl_advect(cl_bundle bundle, unsigned int sim_size, float dt,
+                 const bool negate_axes[2], const char **errmsg_out) {
+  const char *errmsg = NULL;
+  cl_int status;
+  static const size_t l_sizes[2] = {L_SIZE, L_SIZE};
+  size_t g_sizes[2] = {sim_size / P_SIZE, sim_size};
+  // size_t g_sizes[2] = {sim_size, sim_size};
+  status = clSetKernelArg(bundle->kernels[ADVECT_IX], 0, sizeof(unsigned int),
+                          &sim_size);
+  if (status != CL_SUCCESS)
+    FAIL("Unable to set advect argument 0 with code: %s\n", fail);
+  status = clSetKernelArg(bundle->kernels[ADVECT_IX], 1, sizeof(cl_mem),
+                          &bundle->d_buffers[0]);
+  if (status != CL_SUCCESS)
+    FAIL("Unable to set advect argument 1 with code: %s\n", fail);
+  status = clSetKernelArg(bundle->kernels[ADVECT_IX], 2, sizeof(cl_mem),
+                          &bundle->d_buffers[1]);
+  if (status != CL_SUCCESS)
+    FAIL("Unable to set advect argument 2 with code: %s\n", fail);
+  status = clSetKernelArg(bundle->kernels[ADVECT_IX], 3, sizeof(cl_mem),
+                          &bundle->d_buffers[2]);
+  if (status != CL_SUCCESS)
+    FAIL("Unable to set advect argument 3 with code: %s\n", fail);
+  status = clSetKernelArg(bundle->kernels[ADVECT_IX], 4, sizeof(cl_mem),
+                          &bundle->d_buffers[3]);
+  if (status != CL_SUCCESS)
+    FAIL("Unable to set advect argument 4 with code: %s\n", fail);
+  status = clSetKernelArg(bundle->kernels[ADVECT_IX], 5, sizeof(float), &dt);
+  if (status != CL_SUCCESS)
+    FAIL("Unable to set advect argument 5 with code: %s\n", fail);
+
+  status = clEnqueueNDRangeKernel(bundle->h_cq, bundle->kernels[ADVECT_IX], 2,
+                                  NULL, g_sizes, l_sizes, 0, NULL, NULL);
+  if (status != CL_SUCCESS)
+    FAIL("Failed to execute advect with code: %s\n", fail);
+  status = clFinish(bundle->h_cq);
+  if (status != CL_SUCCESS)
+    FAIL("Failed to finish advect execution with code: %s\n", fail);
+
+  g_sizes[0] = sim_size, g_sizes[1] = 4;
+  int negate_rows = negate_axes[0], negate_cols = negate_axes[1];
+  status = clSetKernelArg(bundle->kernels[SET_BND_IX], 0, sizeof(unsigned int),
+                          &sim_size);
+  if (status != CL_SUCCESS)
+    FAIL("Failed to set set_bnd kernel argument 0 with code: %s\n", fail);
+  status = clSetKernelArg(bundle->kernels[SET_BND_IX], 1, sizeof(cl_mem),
+                          &bundle->d_buffers[0]);
+  if (status != CL_SUCCESS)
+    FAIL("Failed to set set_bnd kernel argument 1 with code: %s\n", fail);
+  status =
+      clSetKernelArg(bundle->kernels[SET_BND_IX], 2, sizeof(int), &negate_rows);
+  if (status != CL_SUCCESS)
+    FAIL("Failed to set set_bnd kernel argument 2 with code: %s\n", fail);
+  status =
+      clSetKernelArg(bundle->kernels[SET_BND_IX], 3, sizeof(int), &negate_cols);
+  if (status != CL_SUCCESS)
+    FAIL("Failed to set set_bnd kernel argument 3 with code: %s\n", fail);
+  status = clEnqueueNDRangeKernel(bundle->h_cq, bundle->kernels[SET_BND_IX], 2,
+                                  NULL, g_sizes, NULL, 0, NULL, NULL);
+  if (status != CL_SUCCESS)
+    FAIL("Failed to execute set_bnd kernel with code: %s\n", fail);
+  status = clFinish(bundle->h_cq);
+  if (status != CL_SUCCESS)
+    FAIL("Failed to finish set_bnd kernel execution with code: %s\n", fail);
 fail:
   *errmsg_out = errmsg;
   return status;

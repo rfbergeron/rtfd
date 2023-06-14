@@ -76,29 +76,15 @@ static void diffuse(size_t sim_size, MatrixType type, float* restrict x,
 
 static void advect(size_t sim_size, MatrixType type, float* restrict d,
                    const float* restrict d0, const float* restrict u,
-                   const float* restrict v, float dt) {
-  float dt0 = dt * sim_size;
-  for (size_t i = ROW_BEGIN; i < ROW_END; i++) {
-    for (size_t j = COL_BEGIN; j < COL_END; j++) {
-      float x = i - dt0 * u[IX(i, j)];
-      float y = j - dt0 * v[IX(i, j)];
-      if (x < ROW_BEGIN - 0.5f) x = ROW_BEGIN - 0.5f;
-      if (x > ROW_END - 0.5f) x = ROW_END - 0.5f;
-      size_t i0 = x;
-      size_t i1 = i0 + 1;
-      if (y < COL_BEGIN - 0.5f) y = COL_BEGIN - 0.5f;
-      if (y > COL_END - 0.5f) y = COL_END - 0.5f;
-      size_t j0 = y;
-      size_t j1 = j0 + 1;
-      float s1 = x - i0;
-      float s0 = 1 - s1;
-      float t1 = y - j0;
-      float t0 = 1 - t1;
-      d[IX(i, j)] = s0 * (t0 * d0[IX(i0, j0)] + t1 * d0[IX(i0, j1)]) +
-                    s1 * (t0 * d0[IX(i1, j0)] + t1 * d0[IX(i1, j1)]);
-    }
-  }
-  set_bnd(sim_size, type, d);
+                   const float* restrict v, float dt, cl_bundle bundle) {
+  const char* errmsg = NULL;
+  cl_int status = cl_advect_setup(bundle, sim_size, d0, u, v, &errmsg);
+  if (status) abort();
+  status = cl_advect(bundle, sim_size, dt,
+                     (bool[2]){type == SLV_MAT_U, type == SLV_MAT_V}, &errmsg);
+  if (status) abort();
+  status = cl_advect_retrieve(bundle, sim_size, d, &errmsg);
+  if (status) abort();
 }
 
 static void project(size_t sim_size, float* restrict u, float* restrict v,
@@ -136,7 +122,7 @@ void cl_solver_dens_step(Solver* solver) {
   set_corners(solver->sim_size, SLV_MAT_D, solver->h_buffers[3]);
   advect(solver->sim_size, SLV_MAT_D, solver->h_buffers[0],
          solver->h_buffers[3], solver->h_buffers[1], solver->h_buffers[2],
-         solver->dt);
+         solver->dt, solver->bundle);
 }
 
 void cl_solver_vel_step(Solver* solver) {
@@ -160,11 +146,11 @@ void cl_solver_vel_step(Solver* solver) {
   set_corners(solver->sim_size, SLV_MAT_U, solver->h_buffers[4]);
   advect(solver->sim_size, SLV_MAT_U, solver->h_buffers[1],
          solver->h_buffers[4], solver->h_buffers[4], solver->h_buffers[5],
-         solver->dt);
+         solver->dt, solver->bundle);
   set_corners(solver->sim_size, SLV_MAT_V, solver->h_buffers[5]);
   advect(solver->sim_size, SLV_MAT_V, solver->h_buffers[2],
          solver->h_buffers[5], solver->h_buffers[4], solver->h_buffers[5],
-         solver->dt);
+         solver->dt, solver->bundle);
   project(solver->sim_size, solver->h_buffers[1], solver->h_buffers[2],
           solver->h_buffers[4], solver->h_buffers[5], solver->h_buffers[3],
           solver->bundle);
