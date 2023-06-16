@@ -109,14 +109,12 @@ void cl_solver_dens_step(Solver* solver) {
   add_source(solver->sim_size, solver->h_buffers[0], solver->h_buffers[3],
              solver->dt, solver->source);
   SWAP(solver->h_buffers[3], solver->h_buffers[0]);
-  diffuse(solver->sim_size, SLV_MAT_D, solver->h_buffers[0],
-          solver->h_buffers[3], solver->h_buffers[4], solver->diff, solver->dt,
-          solver->bundle);
-  SWAP(solver->h_buffers[3], solver->h_buffers[0]);
-  set_corners(solver->sim_size, SLV_MAT_D, solver->h_buffers[3]);
-  advect(solver->sim_size, SLV_MAT_D, solver->h_buffers[0],
-         solver->h_buffers[3], solver->h_buffers[1], solver->h_buffers[2],
-         solver->dt, solver->bundle);
+  const char* errmsg;
+  cl_int status = cl_dens_step_full(solver->bundle, solver->sim_size,
+                                    solver->h_buffers[0], solver->h_buffers[3],
+                                    solver->h_buffers[1], solver->h_buffers[2],
+                                    solver->diff, solver->dt, 20, &errmsg);
+  if (status) abort();
 }
 
 void cl_solver_vel_step(Solver* solver) {

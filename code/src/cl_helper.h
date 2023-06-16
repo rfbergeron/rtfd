@@ -44,4 +44,9 @@ cl_int cl_advect_retrieve(cl_bundle bundle, size_t sim_size, float *h_x,
                           const char **errmsg_out);
 cl_int cl_advect(cl_bundle bundle, unsigned int sim_size, float dt,
                  const bool negate_axes[2], const char **errmsg_out);
+cl_int cl_dens_step_full(cl_bundle bundle, const size_t sim_size,
+                         float *restrict h_x, const float *restrict h_x0,
+                         const float *restrict h_u, const float *restrict h_v,
+                         const float diff, const float dt,
+                         const size_t iterations, const char **errmsg_out);
 #endif
