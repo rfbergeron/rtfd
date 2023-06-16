@@ -627,7 +627,8 @@ cl_int cl_solve_step(cl_bundle bundle, unsigned int sim_size, float a, float c,
     FAIL("Failed to finish jacobi kernel execution with code: %s\n", fail);
 
   g_sizes[0] = sim_size, g_sizes[1] = 4;
-  int negate_rows = negate_axes[0], negate_cols = negate_axes[1];
+  int negate_rows = negate_axes[0], negate_cols = negate_axes[1],
+      set_corners = 0;
   status = clSetKernelArg(bundle->kernels[SET_BND_IX], 0, sizeof(unsigned int),
                           &sim_size);
   if (status != CL_SUCCESS)
@@ -644,6 +645,10 @@ cl_int cl_solve_step(cl_bundle bundle, unsigned int sim_size, float a, float c,
       clSetKernelArg(bundle->kernels[SET_BND_IX], 3, sizeof(int), &negate_cols);
   if (status != CL_SUCCESS)
     FAIL("Failed to set set_bnd kernel argument 3 with code: %s\n", fail);
+  status =
+      clSetKernelArg(bundle->kernels[SET_BND_IX], 4, sizeof(int), &set_corners);
+  if (status != CL_SUCCESS)
+    FAIL("Failed to set set_bnd kernel argument 4 with code: %s\n", fail);
   status = clEnqueueNDRangeKernel(bundle->h_cq, bundle->kernels[SET_BND_IX], 2,
                                   NULL, g_sizes, NULL, 0, NULL, NULL);
   if (status != CL_SUCCESS)
@@ -716,6 +721,11 @@ cl_int cl_solve_full(cl_bundle bundle, const size_t sim_size,
       clSetKernelArg(bundle->kernels[SET_BND_IX], 3, sizeof(int), &negate_cols);
   if (status != CL_SUCCESS)
     FAIL("Failed to set set_bnd kernel argument 3 with code: %s\n", fail);
+  const int set_corners = 0;
+  status =
+      clSetKernelArg(bundle->kernels[SET_BND_IX], 4, sizeof(int), &set_corners);
+  if (status != CL_SUCCESS)
+    FAIL("Failed to set set_bnd kernel argument 4 with code: %s\n", fail);
 
   const size_t jac_sizes[2] = {sim_size / P_SIZE, sim_size};
   const size_t bnd_sizes[2] = {sim_size, 4};
@@ -833,6 +843,10 @@ cl_int cl_project_one(cl_bundle bundle, unsigned int sim_size,
       clSetKernelArg(bundle->kernels[SET_BND_IX], 3, sizeof(int), &I_FALSE);
   if (status != CL_SUCCESS)
     FAIL("Failed to set set_bnd argument 3 with code: %s\n", fail);
+  status =
+      clSetKernelArg(bundle->kernels[SET_BND_IX], 4, sizeof(int), &I_FALSE);
+  if (status != CL_SUCCESS)
+    FAIL("Failed to set set_bnd kernel argument 4 with code: %s\n", fail);
   status = clEnqueueNDRangeKernel(bundle->h_cq, bundle->kernels[SET_BND_IX], 2,
                                   NULL, g_sizes, NULL, 0, NULL, NULL);
   if (status != CL_SUCCESS)
@@ -915,6 +929,10 @@ cl_int cl_project_two(cl_bundle bundle, unsigned int sim_size,
       clSetKernelArg(bundle->kernels[SET_BND_IX], 3, sizeof(int), &I_FALSE);
   if (status != CL_SUCCESS)
     FAIL("Failed to set set_bnd argument 3 with code: %s\n", fail);
+  status =
+      clSetKernelArg(bundle->kernels[SET_BND_IX], 4, sizeof(int), &I_FALSE);
+  if (status != CL_SUCCESS)
+    FAIL("Failed to set set_bnd kernel argument 4 with code: %s\n", fail);
   status = clEnqueueNDRangeKernel(bundle->h_cq, bundle->kernels[SET_BND_IX], 2,
                                   NULL, g_sizes, NULL, 0, NULL, NULL);
   if (status != CL_SUCCESS)
@@ -936,6 +954,10 @@ cl_int cl_project_two(cl_bundle bundle, unsigned int sim_size,
   status = clSetKernelArg(bundle->kernels[SET_BND_IX], 3, sizeof(int), &I_TRUE);
   if (status != CL_SUCCESS)
     FAIL("Failed to set set_bnd argument 3 with code: %s\n", fail);
+  status =
+      clSetKernelArg(bundle->kernels[SET_BND_IX], 4, sizeof(int), &I_FALSE);
+  if (status != CL_SUCCESS)
+    FAIL("Failed to set set_bnd kernel argument 4 with code: %s\n", fail);
   status = clEnqueueNDRangeKernel(bundle->h_cq, bundle->kernels[SET_BND_IX], 2,
                                   NULL, g_sizes, NULL, 0, NULL, NULL);
   if (status != CL_SUCCESS)
@@ -1001,7 +1023,8 @@ cl_int cl_advect(cl_bundle bundle, unsigned int sim_size, float dt,
     FAIL("Failed to finish advect execution with code: %s\n", fail);
 
   g_sizes[0] = sim_size, g_sizes[1] = 4;
-  int negate_rows = negate_axes[0], negate_cols = negate_axes[1];
+  int negate_rows = negate_axes[0], negate_cols = negate_axes[1],
+      set_corners = 0;
   status = clSetKernelArg(bundle->kernels[SET_BND_IX], 0, sizeof(unsigned int),
                           &sim_size);
   if (status != CL_SUCCESS)
@@ -1018,6 +1041,10 @@ cl_int cl_advect(cl_bundle bundle, unsigned int sim_size, float dt,
       clSetKernelArg(bundle->kernels[SET_BND_IX], 3, sizeof(int), &negate_cols);
   if (status != CL_SUCCESS)
     FAIL("Failed to set set_bnd kernel argument 3 with code: %s\n", fail);
+  status =
+      clSetKernelArg(bundle->kernels[SET_BND_IX], 4, sizeof(int), &set_corners);
+  if (status != CL_SUCCESS)
+    FAIL("Failed to set set_bnd kernel argument 4 with code: %s\n", fail);
   status = clEnqueueNDRangeKernel(bundle->h_cq, bundle->kernels[SET_BND_IX], 2,
                                   NULL, g_sizes, NULL, 0, NULL, NULL);
   if (status != CL_SUCCESS)

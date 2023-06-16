@@ -55,7 +55,8 @@
 // group id, local size, and local id.
 
 kernel void set_bnd(const unsigned int sim_size, global float *A,
-                    const int negate_rows, const int negate_cols) {
+                    const int negate_rows, const int negate_cols,
+                    const int set_corners) {
   size_t offset = get_global_id(0);
   size_t border = get_global_id(1);
   switch (border) {
@@ -80,6 +81,25 @@ kernel void set_bnd(const unsigned int sim_size, global float *A,
                       : A[IX(ROW_BEGIN + offset, COL_END - 1)];
       break;
   }
+
+  if (set_corners && border == 0) switch (offset) {
+      case 0:
+        A[IX(ROW_BEGIN - 1, COL_BEGIN - 1)] =
+            negate_rows || negate_cols ? 0 : A[IX(ROW_BEGIN, COL_BEGIN)];
+        break;
+      case 1:
+        A[IX(ROW_BEGIN - 1, COL_END)] =
+            negate_rows || negate_cols ? 0 : A[IX(ROW_BEGIN, COL_END - 1)];
+        break;
+      case 2:
+        A[IX(ROW_END, COL_BEGIN - 1)] =
+            negate_rows || negate_cols ? 0 : A[IX(ROW_END - 1, COL_BEGIN)];
+        break;
+      case 3:
+        A[IX(ROW_END, COL_END)] =
+            negate_rows || negate_cols ? 0 : A[IX(ROW_END - 1, COL_END - 1)];
+        break;
+    }
 }
 
 // jacobi with no local memory and no assumptions about work group size
