@@ -55,15 +55,9 @@ static void solve(size_t sim_size, MatrixType type, float* restrict x,
                   float c, cl_bundle bundle) {
   (void)x1;  // unused parameter
   const char* errmsg;
-  int status = cl_solve_setup(bundle, sim_size, x, x0, &errmsg);
-  if (status) abort();
-  for (size_t k = 0; k < 20; ++k) {
-    status =
-        cl_solve_step(bundle, sim_size, a, c,
-                      (bool[2]){type == SLV_MAT_V, type == SLV_MAT_U}, &errmsg);
-    if (status) abort();
-  }
-  status = cl_solve_retrieve(bundle, sim_size, x, &errmsg);
+  int status = cl_solve_full(bundle, sim_size, x, x0, a, c,
+                             (bool[2]){type == SLV_MAT_V, type == SLV_MAT_U},
+                             20, &errmsg);
   if (status) abort();
 }
 
