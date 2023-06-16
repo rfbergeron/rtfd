@@ -60,7 +60,7 @@ static void solve(size_t sim_size, MatrixType type, float* restrict x,
   for (size_t k = 0; k < 20; ++k) {
     status =
         cl_solve_step(bundle, sim_size, a, c,
-                      (bool[2]){type == SLV_MAT_U, type == SLV_MAT_V}, &errmsg);
+                      (bool[2]){type == SLV_MAT_V, type == SLV_MAT_U}, &errmsg);
     if (status) abort();
   }
   status = cl_solve_retrieve(bundle, sim_size, x, &errmsg);
@@ -81,7 +81,7 @@ static void advect(size_t sim_size, MatrixType type, float* restrict d,
   cl_int status = cl_advect_setup(bundle, sim_size, d0, u, v, &errmsg);
   if (status) abort();
   status = cl_advect(bundle, sim_size, dt,
-                     (bool[2]){type == SLV_MAT_U, type == SLV_MAT_V}, &errmsg);
+                     (bool[2]){type == SLV_MAT_V, type == SLV_MAT_U}, &errmsg);
   if (status) abort();
   status = cl_advect_retrieve(bundle, sim_size, d, &errmsg);
   if (status) abort();

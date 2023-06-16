@@ -241,7 +241,7 @@ kernel void project_two_simple(const unsigned int sim_size, global float *u,
 kernel void advect(const unsigned int sim_size, global float *x,
                    global const float *x0, global const float *u,
                    global const float *v, const float dt) {
-  size_t g_i = get_global_id(1) + ROW_BORDER, g_j = ACTUAL_G0 + COL_BORDER;
+  size_t g_i = get_global_id(1) + ROW_BORDER;
   float dt0 = dt * sim_size;
 
   for (size_t g_j = ACTUAL_G0 + COL_BORDER; g_j < G_COL_END;
