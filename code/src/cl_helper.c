@@ -28,6 +28,12 @@ static const char *KERNEL_NAMES[] = {"jacobi", "set_bnd", "project_one",
     errmsg = msg;        \
     goto label;          \
   } while (0)
+#define D_SWAP(d_x, d_x0) \
+  do {                    \
+    cl_mem temp = d_x0;   \
+    d_x0 = d_x;           \
+    d_x = temp;           \
+  } while (0)
 
 // https://stackoverflow.com/questions/24326432/convenient-way-to-show-opencl-error-codes
 static const char *cl_strerror(cl_int error) {
@@ -1057,6 +1063,88 @@ fail:
   return status;
 }
 
+static cl_int configure_jacobi(cl_bundle bundle, unsigned int sim_size,
+                               const cl_mem d_x0, float a, float c,
+                               const char **errmsg_out) {
+  const char *errmsg = NULL;
+  cl_int status = clSetKernelArg(bundle->kernels[JACOBI_IX], 0,
+                                 sizeof(unsigned int), &sim_size);
+  if (status != CL_SUCCESS)
+    FAIL("Unable to set kernel argument 0 with code: %s\n", fail);
+  status = clSetKernelArg(bundle->kernels[JACOBI_IX], 2, sizeof(cl_mem), &d_x0);
+  if (status != CL_SUCCESS)
+    FAIL("Unable to set jacobi kernel argument 2 with code: %s\n", fail);
+  status = clSetKernelArg(bundle->kernels[JACOBI_IX], 4,
+                          sizeof(float) * L_ACTUAL_SIZE, NULL);
+  if (status != CL_SUCCESS)
+    FAIL("Unable to set jacobi kernel argument 4 with code: %s\n", fail);
+  status = clSetKernelArg(bundle->kernels[JACOBI_IX], 5, sizeof(float), &a);
+  if (status != CL_SUCCESS)
+    FAIL("Unable to set jacobi kernel argument 5 with code: %s\n", fail);
+
+  const float c_inv = 1.0f / c;
+  status = clSetKernelArg(bundle->kernels[JACOBI_IX], 6, sizeof(float), &c_inv);
+  if (status != CL_SUCCESS)
+    FAIL("Unable to set jacobi kernel argument 6 with code: %s\n", fail);
+fail:
+  *errmsg_out = errmsg;
+  return status;
+}
+
+static cl_int configure_set_bnd(cl_bundle bundle, unsigned int sim_size,
+                                const int bnd_opts[3],
+                                const char **errmsg_out) {
+  const char *errmsg = NULL;
+  cl_int status = clSetKernelArg(bundle->kernels[SET_BND_IX], 0,
+                                 sizeof(unsigned int), &sim_size);
+  if (status != CL_SUCCESS)
+    FAIL("Failed to set set_bnd kernel argument 0 with code: %s\n", fail);
+  status =
+      clSetKernelArg(bundle->kernels[SET_BND_IX], 2, sizeof(int), &bnd_opts[0]);
+  if (status != CL_SUCCESS)
+    FAIL("Failed to set set_bnd kernel argument 2 with code: %s\n", fail);
+  status =
+      clSetKernelArg(bundle->kernels[SET_BND_IX], 3, sizeof(int), &bnd_opts[1]);
+  if (status != CL_SUCCESS)
+    FAIL("Failed to set set_bnd kernel argument 3 with code: %s\n", fail);
+  status =
+      clSetKernelArg(bundle->kernels[SET_BND_IX], 4, sizeof(int), &bnd_opts[2]);
+  if (status != CL_SUCCESS)
+    FAIL("Failed to set set_bnd kernel argument 4 with code: %s\n", fail);
+fail:
+  *errmsg_out = errmsg;
+  return status;
+}
+
+static cl_int configure_advect(cl_bundle bundle, unsigned int sim_size,
+                               const cl_mem d_x, const cl_mem d_x0,
+                               const cl_mem d_u, const cl_mem d_v, float dt,
+                               const char **errmsg_out) {
+  const char *errmsg = NULL;
+  cl_int status = clSetKernelArg(bundle->kernels[ADVECT_IX], 0,
+                                 sizeof(unsigned int), &sim_size);
+  if (status != CL_SUCCESS)
+    FAIL("Unable to set advect argument 0 with code: %s\n", fail);
+  status = clSetKernelArg(bundle->kernels[ADVECT_IX], 1, sizeof(cl_mem), &d_x);
+  if (status != CL_SUCCESS)
+    FAIL("Unable to set advect argument 1 with code: %s\n", fail);
+  status = clSetKernelArg(bundle->kernels[ADVECT_IX], 2, sizeof(cl_mem), &d_x0);
+  if (status != CL_SUCCESS)
+    FAIL("Unable to set advect argument 2 with code: %s\n", fail);
+  status = clSetKernelArg(bundle->kernels[ADVECT_IX], 3, sizeof(cl_mem), &d_u);
+  if (status != CL_SUCCESS)
+    FAIL("Unable to set advect argument 3 with code: %s\n", fail);
+  status = clSetKernelArg(bundle->kernels[ADVECT_IX], 4, sizeof(cl_mem), &d_v);
+  if (status != CL_SUCCESS)
+    FAIL("Unable to set advect argument 4 with code: %s\n", fail);
+  status = clSetKernelArg(bundle->kernels[ADVECT_IX], 5, sizeof(float), &dt);
+  if (status != CL_SUCCESS)
+    FAIL("Unable to set advect argument 5 with code: %s\n", fail);
+fail:
+  *errmsg_out = errmsg;
+  return status;
+}
+
 cl_int cl_dens_step_full(cl_bundle bundle, const size_t sim_size,
                          float *restrict h_x, const float *restrict h_x0,
                          const float *restrict h_u, const float *restrict h_v,
@@ -1077,48 +1165,14 @@ cl_int cl_dens_step_full(cl_bundle bundle, const size_t sim_size,
   if (status != CL_SUCCESS)
     FAIL("Unable to write device buffer 1 with code %s.\n", fail);
 
-  // set jacobi arguments that are constant across iterations
-  status = clSetKernelArg(bundle->kernels[JACOBI_IX], 0, sizeof(unsigned int),
-                          &sim_size);
-  if (status != CL_SUCCESS)
-    FAIL("Unable to set kernel argument 0 with code: %s\n", fail);
-  status = clSetKernelArg(bundle->kernels[JACOBI_IX], 2, sizeof(cl_mem),
-                          &bundle->d_buffers[1]);
-  if (status != CL_SUCCESS)
-    FAIL("Unable to set jacobi kernel argument 2 with code: %s\n", fail);
-  status = clSetKernelArg(bundle->kernels[JACOBI_IX], 4,
-                          sizeof(float) * L_ACTUAL_SIZE, NULL);
-  if (status != CL_SUCCESS)
-    FAIL("Unable to set jacobi kernel argument 4 with code: %s\n", fail);
-
-  const float a = dt * diff * sim_size * sim_size;
-  status = clSetKernelArg(bundle->kernels[JACOBI_IX], 5, sizeof(float), &a);
-  if (status != CL_SUCCESS)
-    FAIL("Unable to set jacobi kernel argument 5 with code: %s\n", fail);
-
-  const float c_inv = 1.0f / (1 + 4 * a);
-  status = clSetKernelArg(bundle->kernels[JACOBI_IX], 6, sizeof(float), &c_inv);
-  if (status != CL_SUCCESS)
-    FAIL("Unable to set jacobi kernel argument 6 with code: %s\n", fail);
-
-  // set set_bnd arguments that are constant across (most) iterations
-  static const int I_FALSE = false;
-  status = clSetKernelArg(bundle->kernels[SET_BND_IX], 0, sizeof(unsigned int),
-                          &sim_size);
-  if (status != CL_SUCCESS)
-    FAIL("Failed to set set_bnd kernel argument 0 with code: %s\n", fail);
+  float a = dt * diff * sim_size * sim_size, c = 1 + 4 * a;
   status =
-      clSetKernelArg(bundle->kernels[SET_BND_IX], 2, sizeof(int), &I_FALSE);
-  if (status != CL_SUCCESS)
-    FAIL("Failed to set set_bnd kernel argument 2 with code: %s\n", fail);
-  status =
-      clSetKernelArg(bundle->kernels[SET_BND_IX], 3, sizeof(int), &I_FALSE);
-  if (status != CL_SUCCESS)
-    FAIL("Failed to set set_bnd kernel argument 3 with code: %s\n", fail);
-  status =
-      clSetKernelArg(bundle->kernels[SET_BND_IX], 4, sizeof(int), &I_FALSE);
-  if (status != CL_SUCCESS)
-    FAIL("Failed to set set_bnd kernel argument 4 with code: %s\n", fail);
+      configure_jacobi(bundle, sim_size, bundle->d_buffers[1], a, c, &errmsg);
+  if (status != CL_SUCCESS) FAIL(errmsg, fail);
+
+  status = configure_set_bnd(bundle, sim_size, (int[3]){false, false, false},
+                             &errmsg);
+  if (status != CL_SUCCESS) FAIL(errmsg, fail);
 
   const size_t jac_sizes[2] = {sim_size / P_SIZE, sim_size};
   const size_t bnd_sizes[2] = {sim_size, 4};
@@ -1159,15 +1213,11 @@ cl_int cl_dens_step_full(cl_bundle bundle, const size_t sim_size,
       FAIL("Failed to enqueue set_bnd kernel with code: %s\n", fail);
 
     // swap d_x and d_x1; most recent value will be in d_x after swap
-    cl_mem temp = bundle->d_buffers[0];
-    bundle->d_buffers[0] = bundle->d_buffers[2];
-    bundle->d_buffers[2] = temp;
+    D_SWAP(bundle->d_buffers[0], bundle->d_buffers[2]);
   }
 
   // swap d_x and d_x0
-  cl_mem temp = bundle->d_buffers[0];
-  bundle->d_buffers[0] = bundle->d_buffers[1];
-  bundle->d_buffers[1] = temp;
+  D_SWAP(bundle->d_buffers[0], bundle->d_buffers[1]);
 
   // write host arrays to device for advection
   status =
@@ -1181,30 +1231,10 @@ cl_int cl_dens_step_full(cl_bundle bundle, const size_t sim_size,
   if (status != CL_SUCCESS)
     FAIL("Unable to write device buffer 3 with code %s.\n", fail);
 
-  // set advection kernel arguments
-  status = clSetKernelArg(bundle->kernels[ADVECT_IX], 0, sizeof(unsigned int),
-                          &sim_size);
-  if (status != CL_SUCCESS)
-    FAIL("Unable to set advect argument 0 with code: %s\n", fail);
-  status = clSetKernelArg(bundle->kernels[ADVECT_IX], 1, sizeof(cl_mem),
-                          &bundle->d_buffers[0]);
-  if (status != CL_SUCCESS)
-    FAIL("Unable to set advect argument 1 with code: %s\n", fail);
-  status = clSetKernelArg(bundle->kernels[ADVECT_IX], 2, sizeof(cl_mem),
-                          &bundle->d_buffers[1]);
-  if (status != CL_SUCCESS)
-    FAIL("Unable to set advect argument 2 with code: %s\n", fail);
-  status = clSetKernelArg(bundle->kernels[ADVECT_IX], 3, sizeof(cl_mem),
-                          &bundle->d_buffers[2]);
-  if (status != CL_SUCCESS)
-    FAIL("Unable to set advect argument 3 with code: %s\n", fail);
-  status = clSetKernelArg(bundle->kernels[ADVECT_IX], 4, sizeof(cl_mem),
-                          &bundle->d_buffers[3]);
-  if (status != CL_SUCCESS)
-    FAIL("Unable to set advect argument 4 with code: %s\n", fail);
-  status = clSetKernelArg(bundle->kernels[ADVECT_IX], 5, sizeof(float), &dt);
-  if (status != CL_SUCCESS)
-    FAIL("Unable to set advect argument 5 with code: %s\n", fail);
+  status = configure_advect(bundle, sim_size, bundle->d_buffers[0],
+                            bundle->d_buffers[1], bundle->d_buffers[2],
+                            bundle->d_buffers[3], dt, &errmsg);
+  if (status != CL_SUCCESS) FAIL(errmsg, fail);
 
   const size_t adv_sizes[2] = {sim_size / P_SIZE, sim_size};
   status = clEnqueueNDRangeKernel(bundle->h_cq, bundle->kernels[ADVECT_IX], 2,
@@ -1218,6 +1248,7 @@ cl_int cl_dens_step_full(cl_bundle bundle, const size_t sim_size,
                           &bundle->d_buffers[0]);
   if (status != CL_SUCCESS)
     FAIL("Unable to set set_bnd argument 1 with code: %s\n", fail);
+  const int I_FALSE = false;
   status =
       clSetKernelArg(bundle->kernels[SET_BND_IX], 4, sizeof(int), &I_FALSE);
   if (status != CL_SUCCESS)
