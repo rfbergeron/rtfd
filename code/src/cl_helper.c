@@ -12,9 +12,6 @@
 
 #include "cl_common.h"
 
-static const char *OPTS_FMT = "-I%s/src -cl-std=CL2.0";
-static const char *KERNEL_NAMES[] = {"jacobi", "set_bnd", "project_one",
-                                     "project_two", "advect"};
 #define JACOBI_IX 0
 #define SET_BND_IX 1
 #define PROJECT_ONE_IX 2
@@ -34,6 +31,11 @@ static const char *KERNEL_NAMES[] = {"jacobi", "set_bnd", "project_one",
     d_x0 = d_x;           \
     d_x = temp;           \
   } while (0)
+
+static const char *OPTS_FMT = "-I%s/src -cl-std=CL2.0";
+static const char *KERNEL_NAMES[] = {"jacobi", "set_bnd", "project_one",
+                                     "project_two", "advect"};
+static const size_t L_SIZES[] = {L_SIZE, L_SIZE};
 
 // https://stackoverflow.com/questions/24326432/convenient-way-to-show-opencl-error-codes
 static const char *cl_strerror(cl_int error) {
@@ -594,7 +596,6 @@ cl_int cl_solve_step(cl_bundle bundle, unsigned int sim_size, float a, float c,
   const char *errmsg = NULL;
   cl_int status;
   float c_inv = 1.0f / c;
-  static const size_t l_sizes[2] = {L_SIZE, L_SIZE};
   size_t g_sizes[2] = {sim_size / P_SIZE, sim_size};
   // size_t g_sizes[2] = {sim_size, sim_size};
   status = clSetKernelArg(bundle->kernels[JACOBI_IX], 0, sizeof(unsigned int),
@@ -625,7 +626,7 @@ cl_int cl_solve_step(cl_bundle bundle, unsigned int sim_size, float a, float c,
     FAIL("Unable to set jacobi kernel argument 6 with code: %s\n", fail);
 
   status = clEnqueueNDRangeKernel(bundle->h_cq, bundle->kernels[JACOBI_IX], 2,
-                                  NULL, g_sizes, l_sizes, 0, NULL, NULL);
+                                  NULL, g_sizes, L_SIZES, 0, NULL, NULL);
   if (status != CL_SUCCESS)
     FAIL("Failed to execute jacobi kernel with code: %s\n", fail);
   status = clFinish(bundle->h_cq);
@@ -735,7 +736,6 @@ cl_int cl_solve_full(cl_bundle bundle, const size_t sim_size,
 
   const size_t jac_sizes[2] = {sim_size / P_SIZE, sim_size};
   const size_t bnd_sizes[2] = {sim_size, 4};
-  static const size_t l_sizes[2] = {L_SIZE, L_SIZE};
   for (size_t i = 0; i < iterations; ++i) {
     // set per-iteration jacobi arguments
     status = clSetKernelArg(bundle->kernels[JACOBI_IX], 1, sizeof(cl_mem),
@@ -747,7 +747,7 @@ cl_int cl_solve_full(cl_bundle bundle, const size_t sim_size,
     if (status != CL_SUCCESS)
       FAIL("Unable to set jacobi kernel argument 3 with code: %s\n", fail);
     status = clEnqueueNDRangeKernel(bundle->h_cq, bundle->kernels[JACOBI_IX], 2,
-                                    NULL, jac_sizes, l_sizes, 0, NULL, NULL);
+                                    NULL, jac_sizes, L_SIZES, 0, NULL, NULL);
     if (status != CL_SUCCESS)
       FAIL("Failed to enqueue jacobi kernel with code: %s\n", fail);
 
@@ -798,7 +798,6 @@ cl_int cl_project_one(cl_bundle bundle, unsigned int sim_size,
                       const char **errmsg_out) {
   const char *errmsg = NULL;
   cl_int status;
-  static const size_t l_sizes[2] = {L_SIZE, L_SIZE};
   size_t g_sizes[2] = {sim_size / P_SIZE, sim_size};
 
   status = clSetKernelArg(bundle->kernels[PROJECT_ONE_IX], 0,
@@ -823,7 +822,7 @@ cl_int cl_project_one(cl_bundle bundle, unsigned int sim_size,
     FAIL("Unable to set project_one argument 4 with code: %s\n", fail);
 
   status = clEnqueueNDRangeKernel(bundle->h_cq, bundle->kernels[PROJECT_ONE_IX],
-                                  2, NULL, g_sizes, l_sizes, 0, NULL, NULL);
+                                  2, NULL, g_sizes, L_SIZES, 0, NULL, NULL);
   if (status != CL_SUCCESS)
     FAIL("Failed to execute project_one with code: %s\n", fail);
   status = clFinish(bundle->h_cq);
@@ -884,7 +883,6 @@ cl_int cl_project_two(cl_bundle bundle, unsigned int sim_size,
                       const char **errmsg_out) {
   const char *errmsg = NULL;
   cl_int status;
-  static const size_t l_sizes[2] = {L_SIZE, L_SIZE};
   size_t g_sizes[2] = {sim_size / P_SIZE, sim_size};
 
   status = clSetKernelArg(bundle->kernels[PROJECT_TWO_IX], 0,
@@ -909,7 +907,7 @@ cl_int cl_project_two(cl_bundle bundle, unsigned int sim_size,
     FAIL("Unable to set project_two argument 4 with code: %s\n", fail);
 
   status = clEnqueueNDRangeKernel(bundle->h_cq, bundle->kernels[PROJECT_TWO_IX],
-                                  2, NULL, g_sizes, l_sizes, 0, NULL, NULL);
+                                  2, NULL, g_sizes, L_SIZES, 0, NULL, NULL);
   if (status != CL_SUCCESS)
     FAIL("Failed to execute project_two with code: %s\n", fail);
   status = clFinish(bundle->h_cq);
@@ -993,7 +991,6 @@ cl_int cl_advect(cl_bundle bundle, unsigned int sim_size, float dt,
                  const bool negate_axes[2], const char **errmsg_out) {
   const char *errmsg = NULL;
   cl_int status;
-  static const size_t l_sizes[2] = {L_SIZE, L_SIZE};
   size_t g_sizes[2] = {sim_size / P_SIZE, sim_size};
   // size_t g_sizes[2] = {sim_size, sim_size};
   status = clSetKernelArg(bundle->kernels[ADVECT_IX], 0, sizeof(unsigned int),
@@ -1021,7 +1018,7 @@ cl_int cl_advect(cl_bundle bundle, unsigned int sim_size, float dt,
     FAIL("Unable to set advect argument 5 with code: %s\n", fail);
 
   status = clEnqueueNDRangeKernel(bundle->h_cq, bundle->kernels[ADVECT_IX], 2,
-                                  NULL, g_sizes, l_sizes, 0, NULL, NULL);
+                                  NULL, g_sizes, L_SIZES, 0, NULL, NULL);
   if (status != CL_SUCCESS)
     FAIL("Failed to execute advect with code: %s\n", fail);
   status = clFinish(bundle->h_cq);
@@ -1145,6 +1142,55 @@ fail:
   return status;
 }
 
+static cl_int enqueue_solve(cl_bundle bundle, unsigned int sim_size, cl_mem d_x,
+                            cl_mem d_x1, bool set_corners, size_t iterations,
+                            const char **errmsg_out) {
+  const char *errmsg = NULL;
+  cl_int status = CL_SUCCESS;
+  const size_t jac_sizes[2] = {sim_size / P_SIZE, sim_size};
+  const size_t bnd_sizes[2] = {sim_size, 4};
+  for (size_t i = 0; i < iterations; ++i) {
+    // set per-iteration jacobi arguments
+    status =
+        clSetKernelArg(bundle->kernels[JACOBI_IX], 1, sizeof(cl_mem), &d_x);
+    if (status != CL_SUCCESS)
+      FAIL("Unable to set jacobi kernel argument 1 with code: %s\n", fail);
+    status =
+        clSetKernelArg(bundle->kernels[JACOBI_IX], 3, sizeof(cl_mem), &d_x1);
+    if (status != CL_SUCCESS)
+      FAIL("Unable to set jacobi kernel argument 3 with code: %s\n", fail);
+
+    status = clEnqueueNDRangeKernel(bundle->h_cq, bundle->kernels[JACOBI_IX], 2,
+                                    NULL, jac_sizes, L_SIZES, 0, NULL, NULL);
+    if (status != CL_SUCCESS)
+      FAIL("Failed to enqueue jacobi kernel with code: %s\n", fail);
+
+    // set per-iteration set_bnd arguments
+    status =
+        clSetKernelArg(bundle->kernels[SET_BND_IX], 1, sizeof(cl_mem), &d_x1);
+    if (status != CL_SUCCESS)
+      FAIL("Failed to set set_bnd kernel argument 1 with code: %s\n", fail);
+    // set corners on final iteration
+    if (i == iterations - 1 && set_corners) {
+      static const int I_TRUE = true;
+      status =
+          clSetKernelArg(bundle->kernels[SET_BND_IX], 4, sizeof(int), &I_TRUE);
+      if (status != CL_SUCCESS)
+        FAIL("Failed to set set_bnd kernel argument 4 with code: %s\n", fail);
+    }
+
+    status = clEnqueueNDRangeKernel(bundle->h_cq, bundle->kernels[SET_BND_IX],
+                                    2, NULL, bnd_sizes, NULL, 0, NULL, NULL);
+    if (status != CL_SUCCESS)
+      FAIL("Failed to enqueue set_bnd kernel with code: %s\n", fail);
+
+    D_SWAP(d_x, d_x1);
+  }
+fail:
+  *errmsg_out = errmsg;
+  return status;
+}
+
 cl_int cl_dens_step_full(cl_bundle bundle, const size_t sim_size,
                          float *restrict h_x, const float *restrict h_x0,
                          const float *restrict h_u, const float *restrict h_v,
@@ -1165,6 +1211,7 @@ cl_int cl_dens_step_full(cl_bundle bundle, const size_t sim_size,
   if (status != CL_SUCCESS)
     FAIL("Unable to write device buffer 1 with code %s.\n", fail);
 
+  // configure and enqueue all kernels for the solver
   float a = dt * diff * sim_size * sim_size, c = 1 + 4 * a;
   status =
       configure_jacobi(bundle, sim_size, bundle->d_buffers[1], a, c, &errmsg);
@@ -1173,48 +1220,9 @@ cl_int cl_dens_step_full(cl_bundle bundle, const size_t sim_size,
   status = configure_set_bnd(bundle, sim_size, (int[3]){false, false, false},
                              &errmsg);
   if (status != CL_SUCCESS) FAIL(errmsg, fail);
-
-  const size_t jac_sizes[2] = {sim_size / P_SIZE, sim_size};
-  const size_t bnd_sizes[2] = {sim_size, 4};
-  static const size_t l_sizes[2] = {L_SIZE, L_SIZE};
-  for (size_t i = 0; i < iterations; ++i) {
-    // set per-iteration jacobi arguments
-    status = clSetKernelArg(bundle->kernels[JACOBI_IX], 1, sizeof(cl_mem),
-                            &bundle->d_buffers[0]);
-    if (status != CL_SUCCESS)
-      FAIL("Unable to set jacobi kernel argument 1 with code: %s\n", fail);
-    status = clSetKernelArg(bundle->kernels[JACOBI_IX], 3, sizeof(cl_mem),
-                            &bundle->d_buffers[2]);
-    if (status != CL_SUCCESS)
-      FAIL("Unable to set jacobi kernel argument 3 with code: %s\n", fail);
-
-    status = clEnqueueNDRangeKernel(bundle->h_cq, bundle->kernels[JACOBI_IX], 2,
-                                    NULL, jac_sizes, l_sizes, 0, NULL, NULL);
-    if (status != CL_SUCCESS)
-      FAIL("Failed to enqueue jacobi kernel with code: %s\n", fail);
-
-    // set per-iteration set_bnd arguments
-    status = clSetKernelArg(bundle->kernels[SET_BND_IX], 1, sizeof(cl_mem),
-                            &bundle->d_buffers[2]);
-    if (status != CL_SUCCESS)
-      FAIL("Failed to set set_bnd kernel argument 1 with code: %s\n", fail);
-    // set corners on final iteration
-    if (i == iterations - 1) {
-      static const int I_TRUE = true;
-      status =
-          clSetKernelArg(bundle->kernels[SET_BND_IX], 4, sizeof(int), &I_TRUE);
-      if (status != CL_SUCCESS)
-        FAIL("Failed to set set_bnd kernel argument 4 with code: %s\n", fail);
-    }
-
-    status = clEnqueueNDRangeKernel(bundle->h_cq, bundle->kernels[SET_BND_IX],
-                                    2, NULL, bnd_sizes, NULL, 0, NULL, NULL);
-    if (status != CL_SUCCESS)
-      FAIL("Failed to enqueue set_bnd kernel with code: %s\n", fail);
-
-    // swap d_x and d_x1; most recent value will be in d_x after swap
-    D_SWAP(bundle->d_buffers[0], bundle->d_buffers[2]);
-  }
+  status = enqueue_solve(bundle, sim_size, bundle->d_buffers[0],
+                         bundle->d_buffers[1], true, iterations, &errmsg);
+  if (status) FAIL(errmsg, fail);
 
   // swap d_x and d_x0
   D_SWAP(bundle->d_buffers[0], bundle->d_buffers[1]);
@@ -1235,10 +1243,9 @@ cl_int cl_dens_step_full(cl_bundle bundle, const size_t sim_size,
                             bundle->d_buffers[1], bundle->d_buffers[2],
                             bundle->d_buffers[3], dt, &errmsg);
   if (status != CL_SUCCESS) FAIL(errmsg, fail);
-
   const size_t adv_sizes[2] = {sim_size / P_SIZE, sim_size};
   status = clEnqueueNDRangeKernel(bundle->h_cq, bundle->kernels[ADVECT_IX], 2,
-                                  NULL, adv_sizes, l_sizes, 0, NULL, NULL);
+                                  NULL, adv_sizes, L_SIZES, 0, NULL, NULL);
   if (status != CL_SUCCESS)
     FAIL("Failed to enqueue advect with code: %s\n", fail);
 
@@ -1254,6 +1261,7 @@ cl_int cl_dens_step_full(cl_bundle bundle, const size_t sim_size,
   if (status != CL_SUCCESS)
     FAIL("Failed to set set_bnd argument 4 with code: %s\n", fail);
 
+  const size_t bnd_sizes[2] = {sim_size, 4};
   status = clEnqueueNDRangeKernel(bundle->h_cq, bundle->kernels[SET_BND_IX], 2,
                                   NULL, bnd_sizes, NULL, 0, NULL, NULL);
   if (status != CL_SUCCESS)
