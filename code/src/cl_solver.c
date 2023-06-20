@@ -123,29 +123,13 @@ void cl_solver_vel_step(Solver* solver) {
   add_source(solver->sim_size, solver->h_buffers[2], solver->h_buffers[5],
              solver->dt, solver->force);
   SWAP(solver->h_buffers[4], solver->h_buffers[1]);
-  diffuse(solver->sim_size, SLV_MAT_U, solver->h_buffers[1],
-          solver->h_buffers[4], solver->h_buffers[3], solver->visc, solver->dt,
-          solver->bundle);
   SWAP(solver->h_buffers[5], solver->h_buffers[2]);
-  diffuse(solver->sim_size, SLV_MAT_V, solver->h_buffers[2],
-          solver->h_buffers[5], solver->h_buffers[3], solver->visc, solver->dt,
-          solver->bundle);
-  project(solver->sim_size, solver->h_buffers[1], solver->h_buffers[2],
-          solver->h_buffers[4], solver->h_buffers[5], solver->h_buffers[3],
-          solver->bundle);
-  SWAP(solver->h_buffers[4], solver->h_buffers[1]);
-  SWAP(solver->h_buffers[5], solver->h_buffers[2]);
-  set_corners(solver->sim_size, SLV_MAT_U, solver->h_buffers[4]);
-  advect(solver->sim_size, SLV_MAT_U, solver->h_buffers[1],
-         solver->h_buffers[4], solver->h_buffers[4], solver->h_buffers[5],
-         solver->dt, solver->bundle);
-  set_corners(solver->sim_size, SLV_MAT_V, solver->h_buffers[5]);
-  advect(solver->sim_size, SLV_MAT_V, solver->h_buffers[2],
-         solver->h_buffers[5], solver->h_buffers[4], solver->h_buffers[5],
-         solver->dt, solver->bundle);
-  project(solver->sim_size, solver->h_buffers[1], solver->h_buffers[2],
-          solver->h_buffers[4], solver->h_buffers[5], solver->h_buffers[3],
-          solver->bundle);
+  const char* errmsg;
+  cl_int status = cl_vel_step_full(solver->bundle, solver->sim_size,
+                                   solver->h_buffers[1], solver->h_buffers[2],
+                                   solver->h_buffers[4], solver->h_buffers[5],
+                                   solver->visc, solver->dt, 20, &errmsg);
+  if (status) abort();
 }
 
 float* cl_solver_ix(Solver* solver, size_t x, size_t y, MatrixType type) {

@@ -1275,3 +1275,268 @@ fail:
   *errmsg_out = errmsg;
   return status;
 }
+
+static cl_int configure_project_one(cl_bundle bundle, unsigned int sim_size,
+                                    const cl_mem d_div, const cl_mem d_u,
+                                    const cl_mem d_v, const char **errmsg_out) {
+  const char *errmsg = NULL;
+
+  cl_int status = clSetKernelArg(bundle->kernels[PROJECT_ONE_IX], 0,
+                                 sizeof(unsigned int), &sim_size);
+  if (status != CL_SUCCESS)
+    FAIL("Unable to set project_one argument 0 with code: %s\n", fail);
+  status = clSetKernelArg(bundle->kernels[PROJECT_ONE_IX], 1, sizeof(cl_mem),
+                          &d_div);
+  if (status != CL_SUCCESS)
+    FAIL("Unable to set project_one argument 1 with code: %s\n", fail);
+  status =
+      clSetKernelArg(bundle->kernels[PROJECT_ONE_IX], 2, sizeof(cl_mem), &d_u);
+  if (status != CL_SUCCESS)
+    FAIL("Unable to set project_one argument 2 with code: %s\n", fail);
+  status =
+      clSetKernelArg(bundle->kernels[PROJECT_ONE_IX], 3, sizeof(cl_mem), &d_v);
+  if (status != CL_SUCCESS)
+    FAIL("Unable to set project_one argument 3 with code: %s\n", fail);
+  status = clSetKernelArg(bundle->kernels[PROJECT_ONE_IX], 4,
+                          sizeof(float) * L_ACTUAL_SIZE, NULL);
+  if (status != CL_SUCCESS)
+    FAIL("Unable to set project_one argument 4 with code: %s\n", fail);
+
+fail:
+  *errmsg_out = errmsg;
+  return status;
+}
+
+static cl_int configure_project_two(cl_bundle bundle, unsigned int sim_size,
+                                    const cl_mem d_u, const cl_mem d_v,
+                                    const cl_mem d_p, const char **errmsg_out) {
+  const char *errmsg = NULL;
+
+  cl_int status = clSetKernelArg(bundle->kernels[PROJECT_TWO_IX], 0,
+                                 sizeof(unsigned int), &sim_size);
+  if (status != CL_SUCCESS)
+    FAIL("Unable to set project_two argument 0 with code: %s\n", fail);
+  status =
+      clSetKernelArg(bundle->kernels[PROJECT_TWO_IX], 1, sizeof(cl_mem), &d_u);
+  if (status != CL_SUCCESS)
+    FAIL("Unable to set project_two argument 1 with code: %s\n", fail);
+  status =
+      clSetKernelArg(bundle->kernels[PROJECT_TWO_IX], 2, sizeof(cl_mem), &d_v);
+  if (status != CL_SUCCESS)
+    FAIL("Unable to set project_two argument 2 with code: %s\n", fail);
+  status =
+      clSetKernelArg(bundle->kernels[PROJECT_TWO_IX], 3, sizeof(cl_mem), &d_p);
+  if (status != CL_SUCCESS)
+    FAIL("Unable to set project_two argument 3 with code: %s\n", fail);
+  status = clSetKernelArg(bundle->kernels[PROJECT_TWO_IX], 4,
+                          sizeof(float) * L_ACTUAL_SIZE, NULL);
+  if (status != CL_SUCCESS)
+    FAIL("Unable to set project_two argument 4 with code: %s\n", fail);
+
+fail:
+  *errmsg_out = errmsg;
+  return status;
+}
+
+static cl_int cl_project(cl_bundle bundle, unsigned int sim_size,
+                         const cl_mem d_u, const cl_mem d_v, const cl_mem d_p,
+                         const cl_mem d_div, const cl_mem d_scratch,
+                         size_t iterations, const char **errmsg_out) {
+  const char *errmsg = NULL;
+
+  cl_int status =
+      configure_project_one(bundle, sim_size, d_div, d_u, d_v, &errmsg);
+  if (status) FAIL(errmsg, fail);
+  const size_t proj_sizes[2] = {sim_size / P_SIZE, sim_size};
+  status = clEnqueueNDRangeKernel(bundle->h_cq, bundle->kernels[PROJECT_ONE_IX],
+                                  2, NULL, proj_sizes, L_SIZES, 0, NULL, NULL);
+  if (status != CL_SUCCESS)
+    FAIL("Failed to enqueue project_one with code: %s\n", fail);
+
+  status = configure_set_bnd(bundle, sim_size, (int[3]){false, false, false},
+                             &errmsg);
+  if (status) FAIL(errmsg, fail);
+  status =
+      clSetKernelArg(bundle->kernels[SET_BND_IX], 1, sizeof(cl_mem), &d_div);
+  if (status) FAIL("Failed to set set_bnd argument 1 with code: %s\n", fail);
+  const size_t bnd_sizes[] = {sim_size, 4};
+  status = clEnqueueNDRangeKernel(bundle->h_cq, bundle->kernels[SET_BND_IX], 2,
+                                  NULL, bnd_sizes, NULL, 0, NULL, NULL);
+  if (status != CL_SUCCESS)
+    FAIL("Failed to enqueue set_bnd kernel with code: %s\n", fail);
+
+  static const float ZERO = 0.0f;
+  status = clEnqueueFillBuffer(bundle->h_cq, d_p, &ZERO, sizeof(float), 0,
+                               ACTUAL_SIZE * sizeof(float), 0, NULL, NULL);
+  if (status != CL_SUCCESS) FAIL("Failed to zero-fill p with code: %s\n", fail);
+
+  status = configure_jacobi(bundle, sim_size, d_div, 1, 4, &errmsg);
+  if (status) FAIL(errmsg, fail);
+  status = enqueue_solve(bundle, sim_size, d_p, d_scratch, false, iterations,
+                         &errmsg);
+  if (status) FAIL(errmsg, fail);
+
+  status = configure_project_two(bundle, sim_size, d_u, d_v, d_p, &errmsg);
+  if (status) FAIL(errmsg, fail);
+  status = clEnqueueNDRangeKernel(bundle->h_cq, bundle->kernels[PROJECT_TWO_IX],
+                                  2, NULL, proj_sizes, L_SIZES, 0, NULL, NULL);
+  if (status != CL_SUCCESS)
+    FAIL("Failed to enqueue project_two with code: %s\n", fail);
+
+  status = configure_set_bnd(bundle, sim_size, (int[3]){false, true, false},
+                             &errmsg);
+  if (status) FAIL(errmsg, fail);
+  status = clSetKernelArg(bundle->kernels[SET_BND_IX], 1, sizeof(cl_mem), &d_u);
+  if (status) FAIL("Failed to set set_bnd argument 1 with code: %s\n", fail);
+  status = clEnqueueNDRangeKernel(bundle->h_cq, bundle->kernels[SET_BND_IX], 2,
+                                  NULL, bnd_sizes, NULL, 0, NULL, NULL);
+  if (status != CL_SUCCESS)
+    FAIL("Failed to enqueue set_bnd kernel with code: %s\n", fail);
+
+  status = configure_set_bnd(bundle, sim_size, (int[3]){true, false, false},
+                             &errmsg);
+  if (status) FAIL(errmsg, fail);
+  status = clSetKernelArg(bundle->kernels[SET_BND_IX], 1, sizeof(cl_mem), &d_v);
+  if (status) FAIL("Failed to set set_bnd argument 1 with code: %s\n", fail);
+  status = clEnqueueNDRangeKernel(bundle->h_cq, bundle->kernels[SET_BND_IX], 2,
+                                  NULL, bnd_sizes, NULL, 0, NULL, NULL);
+  if (status != CL_SUCCESS)
+    FAIL("Failed to enqueue set_bnd kernel with code: %s\n", fail);
+
+fail:
+  *errmsg_out = errmsg;
+  return status;
+}
+
+cl_int cl_vel_step_full(cl_bundle bundle, const size_t sim_size,
+                        float *restrict h_u, float *restrict h_v,
+                        const float *restrict h_u0, const float *restrict h_v0,
+                        const float visc, const float dt,
+                        const size_t iterations, const char **errmsg_out) {
+  const char *errmsg = NULL;
+  cl_int status;
+
+  // write host arrays to device for diffusing u
+  status =
+      clEnqueueWriteBuffer(bundle->h_cq, bundle->d_buffers[0], CL_FALSE, 0,
+                           sizeof(float) * ACTUAL_SIZE, h_u, 0, NULL, NULL);
+  if (status != CL_SUCCESS)
+    FAIL("Unable to write device buffer 0 with code %s.\n", fail);
+  status =
+      clEnqueueWriteBuffer(bundle->h_cq, bundle->d_buffers[1], CL_FALSE, 0,
+                           sizeof(float) * ACTUAL_SIZE, h_u0, 0, NULL, NULL);
+  if (status != CL_SUCCESS)
+    FAIL("Unable to write device buffer 1 with code %s.\n", fail);
+
+  // configure and enqueue all kernels for diffusing u
+  float a = dt * visc * sim_size * sim_size, c = 1 + 4 * a;
+  status =
+      configure_jacobi(bundle, sim_size, bundle->d_buffers[1], a, c, &errmsg);
+  if (status != CL_SUCCESS) FAIL(errmsg, fail);
+  status =
+      configure_set_bnd(bundle, sim_size, (int[3]){false, true, true}, &errmsg);
+  if (status != CL_SUCCESS) FAIL(errmsg, fail);
+  status = enqueue_solve(bundle, sim_size, bundle->d_buffers[0],
+                         bundle->d_buffers[1], true, iterations, &errmsg);
+  if (status) FAIL(errmsg, fail);
+
+  // save u
+  D_SWAP(bundle->d_buffers[0], bundle->d_buffers[3]);
+
+  // write host arrays to device for diffusing v
+  status =
+      clEnqueueWriteBuffer(bundle->h_cq, bundle->d_buffers[0], CL_FALSE, 0,
+                           sizeof(float) * ACTUAL_SIZE, h_v, 0, NULL, NULL);
+  if (status != CL_SUCCESS)
+    FAIL("Unable to write device buffer 0 with code %s.\n", fail);
+  status =
+      clEnqueueWriteBuffer(bundle->h_cq, bundle->d_buffers[1], CL_FALSE, 0,
+                           sizeof(float) * ACTUAL_SIZE, h_v0, 0, NULL, NULL);
+  if (status != CL_SUCCESS)
+    FAIL("Unable to write device buffer 1 with code %s.\n", fail);
+
+  // configure and enqueue all kernels for diffusing v
+  // NOTE: this is necessary since we swapped the buffers. if we wanted to, we
+  // could configure the kernel to use buffers 2, 3 and 4 instead of swapping
+  // them on the host
+  status =
+      configure_jacobi(bundle, sim_size, bundle->d_buffers[1], a, c, &errmsg);
+  if (status != CL_SUCCESS) FAIL(errmsg, fail);
+  status =
+      configure_set_bnd(bundle, sim_size, (int[3]){true, false, true}, &errmsg);
+  if (status != CL_SUCCESS) FAIL(errmsg, fail);
+  status = enqueue_solve(bundle, sim_size, bundle->d_buffers[0],
+                         bundle->d_buffers[1], true, iterations, &errmsg);
+  if (status) FAIL(errmsg, fail);
+
+  // save v
+  D_SWAP(bundle->d_buffers[0], bundle->d_buffers[4]);
+
+  // at this point, the contents of the device buffers are as follows:
+  // buffer 0: garbage
+  // buffer 1: v0 (can be discarded)
+  // buffer 2: garbage (previous iteration of v)
+  // buffer 3: u
+  // buffer 4: v
+
+  status =
+      cl_project(bundle, sim_size, bundle->d_buffers[3], bundle->d_buffers[4],
+                 bundle->d_buffers[0], bundle->d_buffers[1],
+                 bundle->d_buffers[2], iterations, &errmsg);
+  if (status) FAIL(errmsg, fail);
+
+  // at this point, the contents of the device buffers are as follows:
+  // buffer 0: p
+  // buffer 1: div
+  // buffer 2: garbage (previous iteration of p)
+  // buffer 3: u
+  // buffer 4: v
+
+  // configure and enqueue advection for p
+  status = configure_advect(bundle, sim_size, bundle->d_buffers[0],
+                            bundle->d_buffers[3], bundle->d_buffers[3],
+                            bundle->d_buffers[4], dt, &errmsg);
+  if (status) FAIL(errmsg, fail);
+  const size_t adv_sizes[2] = {sim_size / P_SIZE, sim_size};
+  status = clEnqueueNDRangeKernel(bundle->h_cq, bundle->kernels[ADVECT_IX], 2,
+                                  NULL, adv_sizes, L_SIZES, 0, NULL, NULL);
+  if (status != CL_SUCCESS)
+    FAIL("Failed to enqueue advect with code: %s\n", fail);
+
+  // configure and enqueue advection for div
+  status = configure_advect(bundle, sim_size, bundle->d_buffers[1],
+                            bundle->d_buffers[4], bundle->d_buffers[3],
+                            bundle->d_buffers[4], dt, &errmsg);
+  if (status) FAIL(errmsg, fail);
+  status = clEnqueueNDRangeKernel(bundle->h_cq, bundle->kernels[ADVECT_IX], 2,
+                                  NULL, adv_sizes, L_SIZES, 0, NULL, NULL);
+  if (status != CL_SUCCESS)
+    FAIL("Failed to enqueue advect with code: %s\n", fail);
+
+  status =
+      cl_project(bundle, sim_size, bundle->d_buffers[0], bundle->d_buffers[1],
+                 bundle->d_buffers[3], bundle->d_buffers[4],
+                 bundle->d_buffers[2], iterations, &errmsg);
+  if (status) FAIL(errmsg, fail);
+
+  // at this point, the contents of the device buffers are as follows:
+  // buffer 0: p (modified)
+  // buffer 1: div (modified)
+  // buffer 2: garbage (previous iteration of p)
+  // buffer 3: p (new)
+  // buffer 4: div (new)
+
+  // read contents of buffer 0 (u) and buffer 1 (v) back to the host
+  status = clEnqueueReadBuffer(bundle->h_cq, bundle->d_buffers[0], CL_TRUE, 0,
+                               sizeof(float) * ACTUAL_SIZE, h_u, 0, NULL, NULL);
+  if (status != CL_SUCCESS)
+    FAIL("Unable to read device buffer 0 with code %s.\n", fail);
+  status = clEnqueueReadBuffer(bundle->h_cq, bundle->d_buffers[1], CL_TRUE, 0,
+                               sizeof(float) * ACTUAL_SIZE, h_v, 0, NULL, NULL);
+  if (status != CL_SUCCESS)
+    FAIL("Unable to read device buffer 1 with code %s.\n", fail);
+
+fail:
+  *errmsg_out = errmsg;
+  return status;
+}
