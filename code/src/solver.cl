@@ -142,20 +142,22 @@ void local_copy(const unsigned int sim_size, global const float *A,
        l_j += get_local_size(0), g_j += get_local_size(0))
     l_A[L_IX(l_i, l_j)] = A[IX(g_i, g_j)];
 
-  // TODO: replace magic number so that this function still works when private
-  // and local size changes
-  // (i, j) -> linear index in the range [0, 256)
-  size_t col_offset = 16 * get_local_id(1) + get_local_id(0);
-  // column of work item with local id (0, 0) + col_offset + COL_BEGIN
-  size_t g_col =
-      COL_BEGIN + get_group_id(0) * get_local_size(0) * P_SIZE + col_offset;
+  // (i, j) -> linear index in the range [0, get_local_size(0) *
+  // get_local_size(1))
+  size_t col_offset = get_local_size(0) * get_local_id(1) + get_local_id(0);
+  size_t col_step = get_local_size(0) * get_local_size(1);
   size_t g_top = ROW_BEGIN + get_group_id(1) * get_local_size(1) - 1;
   size_t g_bot = ROW_BEGIN + (get_group_id(1) + 1) * get_local_size(1);
 
-  // set top border
-  l_A[L_IX(ROW_BEGIN - 1, COL_BEGIN + col_offset)] = A[IX(g_top, g_col)];
-  // set bottom border
-  l_A[L_IX(L_ROW_END, COL_BEGIN + col_offset)] = A[IX(g_bot, g_col)];
+  for (size_t l_col = COL_BEGIN + col_offset,
+              g_col = COL_BEGIN + get_group_id(0) * get_local_size(0) * P_SIZE +
+                      col_offset;
+       l_col < L_COL_END; l_col += col_step, g_col += col_step) {
+    // set top border
+    l_A[L_IX(ROW_BEGIN - 1, l_col)] = A[IX(g_top, g_col)];
+    // set bottom border
+    l_A[L_IX(L_ROW_END, l_col)] = A[IX(g_bot, g_col)];
+  }
 
   work_group_barrier(CLK_LOCAL_MEM_FENCE);
 }
