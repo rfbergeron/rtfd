@@ -12,14 +12,36 @@
 
 #include "cl_common.h"
 
+#ifdef SIMPLE_KERNELS
+#define G_SIZES ((size_t[]){sim_size, sim_size})
+#define L_ACTUAL_SIZE 1
+static const size_t *L_SIZES = NULL;
+static const char *KERNEL_NAMES[] = {"jacobi_simple", "set_bnd",
+                                     "project_one_simple", "project_two_simple",
+                                     "advect_simple"};
+#else
+#define G_SIZES ((size_t[]){sim_size / P_SIZE, sim_size})
+#define L_SIZE_0 16
+#define L_SIZE_1 16
+#define L_ACTUAL_SIZE \
+  ((P_SIZE * L_SIZE_0 + 2 * COL_BORDER) * (L_SIZE_1 + 2 * ROW_BORDER))
+static const size_t L_SIZES[] = {L_SIZE_0, L_SIZE_1};
+#ifdef MULTI_KERNELS
+static const char *KERNEL_NAMES[] = {"jacobi_multi", "set_bnd",
+                                     "project_one_multi", "project_two_multi",
+                                     "advect"};
+#else
+static const char *KERNEL_NAMES[] = {"jacobi", "set_bnd", "project_one",
+                                     "project_two", "advect"};
+#endif
+#endif
+
 #define JACOBI_IX 0
 #define SET_BND_IX 1
 #define PROJECT_ONE_IX 2
 #define PROJECT_TWO_IX 3
 #define ADVECT_IX 4
-#define L_SIZE 16
-#define L_ACTUAL_SIZE \
-  ((P_SIZE * L_SIZE + 2 * COL_BORDER) * (L_SIZE + 2 * ROW_BORDER))
+#define BND_SIZES ((size_t[]){sim_size, 4})
 #define FAIL(msg, label) \
   do {                   \
     errmsg = msg;        \
@@ -47,9 +69,6 @@
   "Failed to allocate memory for " #object_name " with code: %s.\n"
 
 static const char *OPTS_FMT = "-I%s/src -cl-std=CL2.0";
-static const char *KERNEL_NAMES[] = {"jacobi", "set_bnd", "project_one",
-                                     "project_two", "advect"};
-static const size_t L_SIZES[] = {L_SIZE, L_SIZE};
 static const char *ERRMSG_READ_PROG =
     "Failed to read OpenCL program source: buffer size exceeded.\n";
 static const char *ERRMSG_GET_CWD =
@@ -534,8 +553,6 @@ static cl_int enqueue_solve(cl_bundle bundle, unsigned int sim_size, cl_mem d_x,
                             const char **errmsg_out) {
   const char *errmsg = NULL;
   cl_int status = CL_SUCCESS;
-  const size_t jac_sizes[2] = {sim_size / P_SIZE, sim_size};
-  const size_t bnd_sizes[2] = {sim_size, 4};
   for (size_t i = 0; i < iterations; ++i) {
     // set per-iteration jacobi arguments
     status =
@@ -546,7 +563,7 @@ static cl_int enqueue_solve(cl_bundle bundle, unsigned int sim_size, cl_mem d_x,
     if (status != CL_SUCCESS) FAIL(GEN_FAIL_ARG_MSG(jacobi, 3), fail);
 
     status = clEnqueueNDRangeKernel(bundle->h_cq, bundle->kernels[JACOBI_IX], 2,
-                                    NULL, jac_sizes, L_SIZES, 0, NULL, NULL);
+                                    NULL, G_SIZES, L_SIZES, 0, NULL, NULL);
     if (status != CL_SUCCESS) FAIL(GEN_FAIL_ENQUEUE_MSG(jacobi), fail);
 
     // set per-iteration set_bnd arguments
@@ -562,7 +579,7 @@ static cl_int enqueue_solve(cl_bundle bundle, unsigned int sim_size, cl_mem d_x,
     }
 
     status = clEnqueueNDRangeKernel(bundle->h_cq, bundle->kernels[SET_BND_IX],
-                                    2, NULL, bnd_sizes, NULL, 0, NULL, NULL);
+                                    2, NULL, BND_SIZES, NULL, 0, NULL, NULL);
     if (status != CL_SUCCESS) FAIL(GEN_FAIL_ENQUEUE_MSG(set_bnd), fail);
 
     D_SWAP(d_x, d_x1);
@@ -620,9 +637,8 @@ cl_int cl_dens_step_full(cl_bundle bundle, const size_t sim_size,
                             bundle->d_buffers[1], bundle->d_buffers[2],
                             bundle->d_buffers[3], dt, &errmsg);
   if (status != CL_SUCCESS) FAIL(errmsg, fail);
-  const size_t adv_sizes[2] = {sim_size / P_SIZE, sim_size};
   status = clEnqueueNDRangeKernel(bundle->h_cq, bundle->kernels[ADVECT_IX], 2,
-                                  NULL, adv_sizes, L_SIZES, 0, NULL, NULL);
+                                  NULL, G_SIZES, L_SIZES, 0, NULL, NULL);
   if (status != CL_SUCCESS) FAIL(GEN_FAIL_ENQUEUE_MSG(advect), fail);
 
   // set arguments for final set_bnd enqueue. `sim_size`, `negate_rows` and
@@ -635,9 +651,8 @@ cl_int cl_dens_step_full(cl_bundle bundle, const size_t sim_size,
       clSetKernelArg(bundle->kernels[SET_BND_IX], 4, sizeof(int), &I_FALSE);
   if (status != CL_SUCCESS) FAIL(GEN_FAIL_ARG_MSG(set_bnd, 4), fail);
 
-  const size_t bnd_sizes[2] = {sim_size, 4};
   status = clEnqueueNDRangeKernel(bundle->h_cq, bundle->kernels[SET_BND_IX], 2,
-                                  NULL, bnd_sizes, NULL, 0, NULL, NULL);
+                                  NULL, BND_SIZES, NULL, 0, NULL, NULL);
   if (status != CL_SUCCESS) FAIL(GEN_FAIL_ENQUEUE_MSG(set_bnd), fail);
 
   status = clEnqueueReadBuffer(bundle->h_cq, bundle->d_buffers[0], CL_TRUE, 0,
@@ -709,9 +724,8 @@ static cl_int cl_project(cl_bundle bundle, unsigned int sim_size,
   cl_int status =
       configure_project_one(bundle, sim_size, d_div, d_u, d_v, &errmsg);
   if (status) FAIL(errmsg, fail);
-  const size_t proj_sizes[2] = {sim_size / P_SIZE, sim_size};
   status = clEnqueueNDRangeKernel(bundle->h_cq, bundle->kernels[PROJECT_ONE_IX],
-                                  2, NULL, proj_sizes, L_SIZES, 0, NULL, NULL);
+                                  2, NULL, G_SIZES, L_SIZES, 0, NULL, NULL);
   if (status != CL_SUCCESS) FAIL(GEN_FAIL_ENQUEUE_MSG(project_one), fail);
 
   status = configure_set_bnd(bundle, sim_size, (int[3]){false, false, false},
@@ -720,9 +734,8 @@ static cl_int cl_project(cl_bundle bundle, unsigned int sim_size,
   status =
       clSetKernelArg(bundle->kernels[SET_BND_IX], 1, sizeof(cl_mem), &d_div);
   if (status) FAIL(GEN_FAIL_ARG_MSG(set_bnd, 1), fail);
-  const size_t bnd_sizes[] = {sim_size, 4};
   status = clEnqueueNDRangeKernel(bundle->h_cq, bundle->kernels[SET_BND_IX], 2,
-                                  NULL, bnd_sizes, NULL, 0, NULL, NULL);
+                                  NULL, BND_SIZES, NULL, 0, NULL, NULL);
   if (status != CL_SUCCESS) FAIL(GEN_FAIL_ENQUEUE_MSG(set_bnd), fail);
 
   static const float ZERO = 0.0f;
@@ -739,7 +752,7 @@ static cl_int cl_project(cl_bundle bundle, unsigned int sim_size,
   status = configure_project_two(bundle, sim_size, d_u, d_v, d_p, &errmsg);
   if (status) FAIL(errmsg, fail);
   status = clEnqueueNDRangeKernel(bundle->h_cq, bundle->kernels[PROJECT_TWO_IX],
-                                  2, NULL, proj_sizes, L_SIZES, 0, NULL, NULL);
+                                  2, NULL, G_SIZES, L_SIZES, 0, NULL, NULL);
   if (status != CL_SUCCESS) FAIL(GEN_FAIL_ENQUEUE_MSG(project_two), fail);
 
   status = configure_set_bnd(bundle, sim_size, (int[3]){false, true, false},
@@ -748,7 +761,7 @@ static cl_int cl_project(cl_bundle bundle, unsigned int sim_size,
   status = clSetKernelArg(bundle->kernels[SET_BND_IX], 1, sizeof(cl_mem), &d_u);
   if (status) FAIL(GEN_FAIL_ARG_MSG(set_bnd, 1), fail);
   status = clEnqueueNDRangeKernel(bundle->h_cq, bundle->kernels[SET_BND_IX], 2,
-                                  NULL, bnd_sizes, NULL, 0, NULL, NULL);
+                                  NULL, BND_SIZES, NULL, 0, NULL, NULL);
   if (status != CL_SUCCESS) FAIL(GEN_FAIL_ENQUEUE_MSG(set_bnd), fail);
 
   status = configure_set_bnd(bundle, sim_size, (int[3]){true, false, false},
@@ -757,7 +770,7 @@ static cl_int cl_project(cl_bundle bundle, unsigned int sim_size,
   status = clSetKernelArg(bundle->kernels[SET_BND_IX], 1, sizeof(cl_mem), &d_v);
   if (status) FAIL(GEN_FAIL_ARG_MSG(set_bnd, 1), fail);
   status = clEnqueueNDRangeKernel(bundle->h_cq, bundle->kernels[SET_BND_IX], 2,
-                                  NULL, bnd_sizes, NULL, 0, NULL, NULL);
+                                  NULL, BND_SIZES, NULL, 0, NULL, NULL);
   if (status != CL_SUCCESS) FAIL(GEN_FAIL_ENQUEUE_MSG(set_bnd), fail);
 
 fail:
@@ -850,9 +863,8 @@ cl_int cl_vel_step_full(cl_bundle bundle, const size_t sim_size,
                             bundle->d_buffers[3], bundle->d_buffers[3],
                             bundle->d_buffers[4], dt, &errmsg);
   if (status) FAIL(errmsg, fail);
-  const size_t adv_sizes[2] = {sim_size / P_SIZE, sim_size};
   status = clEnqueueNDRangeKernel(bundle->h_cq, bundle->kernels[ADVECT_IX], 2,
-                                  NULL, adv_sizes, L_SIZES, 0, NULL, NULL);
+                                  NULL, G_SIZES, L_SIZES, 0, NULL, NULL);
   if (status != CL_SUCCESS) FAIL(GEN_FAIL_ENQUEUE_MSG(advect), fail);
 
   // configure and enqueue advection for div
@@ -861,7 +873,7 @@ cl_int cl_vel_step_full(cl_bundle bundle, const size_t sim_size,
                             bundle->d_buffers[4], dt, &errmsg);
   if (status) FAIL(errmsg, fail);
   status = clEnqueueNDRangeKernel(bundle->h_cq, bundle->kernels[ADVECT_IX], 2,
-                                  NULL, adv_sizes, L_SIZES, 0, NULL, NULL);
+                                  NULL, G_SIZES, L_SIZES, 0, NULL, NULL);
   if (status != CL_SUCCESS) FAIL(GEN_FAIL_ENQUEUE_MSG(advect), fail);
 
   status =
