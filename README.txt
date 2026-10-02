@@ -18,3 +18,8 @@ PocketPC2002/
 	contains four executable: WindTunnel.exe, PocketPaint.exe, PocketDensity.exe and PocketFluids.exe.
 	Copy these over to your PocketPC device to run them. Note that they only run on devices with an
 	ARM/Xscale processor and running PocketPC2002.
+
+The demo included in `code/` has been updated to use the OpenGL 3.3 core profile and no longer makes use
+of immediate mode. Additionally, more solvers have been added: two vector solvers targeting the SSE2 and
+SSE4.2 extensions to the x86 ISA, and an OpenCL-based solver with multiple kernels variants of increasing
+complexity and performance.
